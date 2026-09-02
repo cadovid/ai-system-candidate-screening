@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: candidate-screening
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    numInstances: 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./var/screening.db
+      - key: LLM_MODEL
+        value: openai:gpt-5.6-luna
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: INTERNAL_API_KEY
+        sync: false
+    disk:
+      name: candidate-screening-var
+      mountPath: /app/var
+      sizeGB: 1

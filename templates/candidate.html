@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delivery driver screening</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="shell" aria-labelledby="page-title">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow" data-i18n="eyebrow">Candidate screening</p>
+        <h1 id="page-title" data-i18n="title">Delivery driver application</h1>
+      </div>
+      <label class="language"><span data-i18n="language_label">Idioma</span>
+        <select id="language" aria-label="Language" data-i18n-aria-label="language_label">
+          <option value="es">Español</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+    </header>
+    <section class="notice" aria-label="Disclosure" data-i18n-aria-label="disclosure_label">
+      <strong data-i18n="assistant">Automated assistant</strong>
+      <span data-i18n="disclosure">This chat collects job-related details for recruiter review. You can stop at any time. Do not share passwords, payment details, contact details, or government ID.</span>
+    </section>
+    <section id="chat" class="chat" aria-live="polite" aria-label="Conversation" data-i18n-aria-label="conversation_label"></section>
+    <form id="chat-form" class="composer">
+      <label class="sr-only" for="message" data-i18n="message_label">Your message</label>
+      <textarea id="message" rows="2" maxlength="2000" data-i18n-placeholder="message_placeholder" placeholder="Escribe tu respuesta…" required></textarea>
+      <button type="submit" id="send" data-i18n="send">Enviar</button>
+    </form>
+    <div class="actions">
+      <button id="new-chat" class="secondary" type="button" data-i18n="new_chat">Empezar de nuevo</button>
+      <button id="stop-chat" class="secondary" type="button" data-i18n="stop_chat">Parar / salir</button>
+      <span id="status" role="status"></span>
+    </div>
+    <p class="fineprint" data-i18n="fineprint">A recruiter reviews screening information. The assistant does not make a subjective hiring decision.</p>
+  </main>
+  <script src="/static/candidate.js" defer></script>
+</body>
+</html>

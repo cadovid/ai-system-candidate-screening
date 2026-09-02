@@ -1,0 +1,79 @@
+name: Live evaluations
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Provider model to evaluate"
+        required: true
+        default: openai:gpt-5.6-luna
+        type: choice
+        options:
+          - openai:gpt-5.6-luna
+      budget_usd:
+        description: "Operator-approved spend threshold (USD; workflow check only, not a provider billing cap)"
+        required: true
+        default: "1.00"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  live-evals:
+    name: Run live evaluations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LLM_MODEL: ${{ inputs.model }}
+    steps:
+      - name: Guard secret, model, and approval threshold
+        env:
+          REQUESTED_MODEL: ${{ inputs.model }}
+          REQUESTED_BUDGET_USD: ${{ inputs.budget_usd }}
+          MAX_APPROVAL_THRESHOLD_USD: "5.00"
+        run: |
+          set -eu
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "OPENAI_API_KEY is not configured for live evaluations" >&2
+            exit 1
+          fi
+          if [ "${REQUESTED_MODEL}" != "openai:gpt-5.6-luna" ]; then
+            echo "The requested model is not in the live-evaluation allowlist" >&2
+            exit 1
+          fi
+          python - "${REQUESTED_BUDGET_USD}" "${MAX_APPROVAL_THRESHOLD_USD}" <<'PY'
+          import sys
+          from decimal import Decimal, InvalidOperation
+
+          try:
+              budget = Decimal(sys.argv[1])
+              maximum = Decimal(sys.argv[2])
+          except (InvalidOperation, IndexError):
+              raise SystemExit("budget_usd must be a decimal amount")
+          if budget <= 0 or budget > maximum:
+              raise SystemExit(f"budget_usd must be greater than 0 and at most {maximum}")
+          print("Approved threshold is an operator gate only; provider billing is not capped by this workflow.")
+          PY
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@v4
+        with:
+          version: 2.28.0
+          cache: true
+
+      - name: Install locked runtime dependencies
+        run: pdm install --prod --frozen-lockfile
+
+      - name: Run live evaluations
+        run: pdm run python scripts/run_evals.py --mode live --json --fail-on-error

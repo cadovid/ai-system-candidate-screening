@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Recruiter screening queue</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <main class="shell recruiter-shell" aria-labelledby="recruiter-title">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Internal review</p>
+        <h1 id="recruiter-title">Screening queue</h1>
+      </div>
+      <a class="secondary link-button" href="/">Candidate view</a>
+    </header>
+    <section class="notice"><strong>Recruiter-only view</strong><span>Use the configured internal API key. Review deterministic criteria and factual summaries; do not use protected characteristics.</span></section>
+    <form id="recruiter-form" class="inline-form">
+      <label for="internal-key">Internal API key</label>
+      <input id="internal-key" type="password" autocomplete="off" required>
+      <button type="submit">Load queue</button>
+    </form>
+    <p id="recruiter-status" role="status"></p>
+    <div class="review-layout">
+      <section id="queue" class="queue" aria-live="polite" aria-label="Screening queue"></section>
+      <aside id="detail" class="detail card" aria-live="polite" hidden>
+        <h2 id="detail-title">Screening details</h2>
+        <div id="detail-content"></div>
+        <button id="retry-summary" class="secondary" type="button" hidden>Retry summary</button>
+        <form id="review-form" class="review-form" hidden>
+          <h3>Record review</h3>
+          <label for="reviewer-id">Reviewer ID</label>
+          <input id="reviewer-id" maxlength="200" required>
+          <label for="review-decision">Review decision</label>
+          <select id="review-decision">
+            <option value="needs_review">Needs review</option>
+            <option value="advance">Advance</option>
+            <option value="reject">Reject</option>
+            <option value="qualified">Qualified</option>
+            <option value="disqualified">Disqualified</option>
+          </select>
+          <label for="review-notes">Notes</label>
+          <textarea id="review-notes" rows="3" maxlength="2000"></textarea>
+          <button type="submit">Save review</button>
+          <p id="review-status" role="status"></p>
+        </form>
+      </aside>
+    </div>
+  </main>
+  <script src="/static/recruiter.js" defer></script>
+</body>
+</html>

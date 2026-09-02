@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Set up PDM
+        uses: pdm-project/setup-pdm@v4
+        with:
+          version: 2.28.0
+          cache: true
+
+      - name: Install locked development dependencies
+        run: pdm install --dev --frozen-lockfile
+
+      - name: Check formatting
+        run: pdm run ruff format --check .
+
+      - name: Lint
+        run: pdm run ruff check .
+
+      - name: Type check
+        run: pdm run pyright src tests
+
+      - name: Test with statement coverage gate
+        run: >-
+          pdm run pytest --cov=candidate_screening --cov-report=term-missing
+          --cov-report=xml --cov-fail-under=85
+
+      - name: Check rules branch coverage
+        run: >-
+          pdm run pytest tests/test_rules_matrix.py
+          --cov=candidate_screening.domain.rules --cov-branch
+          --cov-report=term-missing --cov-fail-under=100
+
+      - name: Check transition branch coverage
+        run: >-
+          pdm run pytest tests/test_transitions.py
+          --cov=candidate_screening.domain.transitions --cov-branch
+          --cov-report=term-missing --cov-fail-under=100
+
+      - name: Check service-area branch coverage
+        run: >-
+          pdm run pytest tests/test_service_areas.py
+          --cov=candidate_screening.domain.service_areas --cov-branch
+          --cov-report=term-missing --cov-fail-under=100
+
+      - name: Smoke-test migrations
+        run: |
+          mkdir -p var
+          DATABASE_URL=sqlite+aiosqlite:///./var/ci-migration.db pdm run alembic upgrade head
+          DATABASE_URL=sqlite+aiosqlite:///./var/ci-migration.db pdm run alembic current
+
+      - name: Build Docker image
+        run: docker build --tag candidate-screening:ci .
+
+      - name: Smoke-test Docker image
+        run: |
+          set -eu
+          docker run --detach --name candidate-screening-ci --publish 18000:8000 candidate-screening:ci
+          cleanup() {
+            docker logs candidate-screening-ci 2>&1 || true
+            docker rm --force candidate-screening-ci 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 30); do
+            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18000/healthz', timeout=2).read()"; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "Docker health endpoint did not become ready in time" >&2
+          exit 1

@@ -1,0 +1,12 @@
+[
+  {"id": "es-mad-centro", "country": "ES", "city": "Madrid", "zone": "Centro", "aliases": ["Madrid centro", "Madrid central"], "timezone": "Europe/Madrid"},
+  {"id": "es-mad-salamanca", "country": "ES", "city": "Madrid", "zone": "Salamanca", "aliases": ["Barrio de Salamanca"], "timezone": "Europe/Madrid"},
+  {"id": "es-bcn-eixample", "country": "ES", "city": "Barcelona", "zone": "Eixample", "aliases": ["Ensanche Barcelona"], "timezone": "Europe/Madrid"},
+  {"id": "es-val-ciutat", "country": "ES", "city": "Valencia", "zone": "Ciutat Vella", "aliases": ["Valencia centro"], "timezone": "Europe/Madrid"},
+  {"id": "es-sev-centro", "country": "ES", "city": "Sevilla", "zone": "Casco Antiguo", "aliases": ["Sevilla centro", "Seville center"], "timezone": "Europe/Madrid"},
+  {"id": "es-mal-centro", "country": "ES", "city": "Málaga", "zone": "Centro", "aliases": ["Malaga centro"], "timezone": "Europe/Madrid"},
+  {"id": "mx-cdmx-roma", "country": "MX", "city": "Ciudad de México", "zone": "Roma-Condesa", "aliases": ["CDMX Roma", "Roma Condesa"], "timezone": "America/Mexico_City"},
+  {"id": "mx-cdmx-polanco", "country": "MX", "city": "Ciudad de México", "zone": "Polanco", "aliases": ["CDMX Polanco"], "timezone": "America/Mexico_City"},
+  {"id": "mx-gdl-centro", "country": "MX", "city": "Guadalajara", "zone": "Centro", "aliases": ["Guadalajara centro"], "timezone": "America/Mexico_City"},
+  {"id": "mx-mty-centro", "country": "MX", "city": "Monterrey", "zone": "Centro", "aliases": ["Monterrey centro"], "timezone": "America/Monterrey"}
+]

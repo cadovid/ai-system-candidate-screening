@@ -1,0 +1,22 @@
+[
+  {
+    "id": "sample_complete_es",
+    "language": "es",
+    "messages": [
+      {"role": "assistant", "content": "¡Hola! Soy el asistente automatizado de IA para el puesto de repartidor/a."},
+      {"role": "user", "content": "Ana López"},
+      {"role": "assistant", "content": "¿Tienes una licencia de conducir vigente? Responde sí o no."},
+      {"role": "user", "content": "Sí, la tengo."},
+      {"role": "user", "content": "Madrid centro, tiempo completo, por la mañana, 3 años y puedo empezar ya."}
+    ]
+  },
+  {
+    "id": "sample_opt_out_en",
+    "language": "en",
+    "messages": [
+      {"role": "assistant", "content": "I’m the automated AI screening assistant for the delivery-driver role."},
+      {"role": "user", "content": "STOP. Please close my screening."},
+      {"role": "assistant", "content": "Understood. We’ll close this screening. Thank you for your time."}
+    ]
+  }
+]

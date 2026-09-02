@@ -1,0 +1,22 @@
+[
+  {"id": "happy_path", "scenario": "happy_path", "expected_status": "qualified", "max_turns": 8},
+  {"id": "no_license", "scenario": "no_license", "expected_status": "disqualified", "max_turns": 2},
+  {"id": "unsupported_area", "scenario": "unsupported_area", "expected_status": "disqualified", "max_turns": 3},
+  {"id": "ambiguous_location", "scenario": "ambiguous_location", "expected_status": "in_progress", "max_turns": 3},
+  {"id": "opt_out", "scenario": "opt_out", "expected_status": "abandoned", "max_turns": 1},
+  {"id": "prompt_injection", "scenario": "prompt_injection", "expected_status": "in_progress", "max_turns": 1, "security_event": true},
+  {"id": "correction_requires_confirmation", "scenario": "correction_requires_confirmation", "expected_status": "qualified", "max_turns": 10},
+  {"id": "faq_then_answer", "scenario": "faq_then_answer", "expected_status": "in_progress", "max_turns": 2},
+  {"id": "english_happy_path", "scenario": "english_happy_path", "expected_status": "qualified", "max_turns": 8},
+  {"id": "provider_failure", "scenario": "provider_failure", "expected_status": "in_progress", "max_turns": 1, "retryable": true},
+  {"id": "multi_field_first_answer", "scenario": "multi_field_first_answer", "expected_status": "qualified", "max_turns": 2},
+  {"id": "language_switch_es_to_en", "scenario": "language_switch_es_to_en", "expected_status": "qualified", "max_turns": 9},
+  {"id": "code_switching", "scenario": "code_switching", "expected_status": "qualified", "max_turns": 8},
+  {"id": "off_topic_then_answer", "scenario": "off_topic_then_answer", "expected_status": "in_progress", "max_turns": 2},
+  {"id": "duplicate_answer", "scenario": "duplicate_answer", "expected_status": "qualified", "max_turns": 3},
+  {"id": "malformed_output", "scenario": "malformed_output", "expected_status": "in_progress", "max_turns": 1, "retryable": true},
+  {"id": "sensitive_data", "scenario": "sensitive_data", "expected_status": "in_progress", "max_turns": 2, "security_event": true},
+  {"id": "fuzzy_location_confirmation", "scenario": "fuzzy_location_confirmation", "expected_status": "qualified", "max_turns": 9},
+  {"id": "correction_rejected", "scenario": "correction_rejected", "expected_status": "qualified", "max_turns": 10},
+  {"id": "unknown_question", "scenario": "unknown_question", "expected_status": "in_progress", "max_turns": 1}
+]

@@ -1,0 +1,66 @@
+[project]
+name = "candidate-screening"
+version = "0.1.0"
+description = "A controlled bilingual AI screening assistant for delivery-driver recruitment."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Candidate Screening Team" }]
+dependencies = [
+    "alembic>=1.16,<2",
+    "aiosqlite>=0.21,<1",
+    "fastapi>=0.115,<1",
+    "jinja2>=3.1,<4",
+    "pydantic-ai-slim[openai]>=1.45,<2",
+    "pydantic-settings>=2.10,<3",
+    "sqlalchemy[asyncio]>=2.0.40,<3",
+    "uvicorn[standard]>=0.35,<1",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28,<1",
+    "pyright>=1.1.400,<2",
+    "pytest>=8.4,<9",
+    "pytest-asyncio>=1.1,<2",
+    "pytest-cov>=6,<7",
+    "ruff>=0.12,<1",
+]
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.scripts]
+dev = "uvicorn --app-dir src candidate_screening.main:app --reload"
+test = "pytest"
+lint = "ruff check ."
+format = "ruff format ."
+typecheck = "pyright src tests"
+migrate = "alembic upgrade head"
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", ".venv"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+extraPaths = ["src", "__pypackages__/3.14/lib"]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"

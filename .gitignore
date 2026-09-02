@@ -1,0 +1,17 @@
+.env
+.venv/
+__pypackages__/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.coverage
+coverage.xml
+htmlcov/
+.pdm-python
+*.py[cod]
+var/
+dist/
+build/
+*.egg-info/
+.DS_Store
