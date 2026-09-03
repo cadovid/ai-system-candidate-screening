@@ -192,3 +192,287 @@ def test_matcher_skips_empty_aliases_and_caps_suggestions_at_five() -> None:
 
     assert result.status is LocationMatchStatus.AMBIGUOUS
     assert len(result.suggestions) == 5
+
+
+def test_matcher_indexes_duplicate_and_unusable_city_aliases() -> None:
+    area = ServiceArea(
+        id="xx-metro-north",
+        country="XX",
+        city="Metro",
+        city_aliases=["Metro", "---"],
+        zone="North",
+    )
+
+    matcher = ServiceAreaMatcher(ServiceAreaCatalog(areas=[area]))
+
+    assert matcher._cities["metro"] == [area]  # pyright: ignore[reportPrivateUsage]
+    assert matcher._area_city_keys[area.id] == {"metro"}  # pyright: ignore[reportPrivateUsage]
+
+
+def test_zone_matching_handles_empty_city_only_and_generic_phrases() -> None:
+    matcher = ServiceAreaMatcher.from_file(Path("data/service_areas/service_areas.json"))
+
+    assert matcher._zone_matches("madrid", "   ") == []  # pyright: ignore[reportPrivateUsage]
+    assert matcher._zone_matches_in_text("madrid", "   ") == []  # pyright: ignore[reportPrivateUsage]
+    generic_matches = matcher._zone_matches_in_text(  # pyright: ignore[reportPrivateUsage]
+        "madrid", "the center in city"
+    )
+    assert [area.id for area in generic_matches] == ["es-mad-centro"]
+
+    # The raw phrase names a city alias rather than the canonical city key;
+    # it must not be interpreted as a zone in the requested city.
+    assert (
+        matcher._zone_matches_in_text(  # pyright: ignore[reportPrivateUsage]
+            "ciudad de mexico", "Mexico City center"
+        )
+        == []
+    )
+
+
+def test_raw_zone_context_rejects_conflicting_and_city_only_phrases() -> None:
+    matcher = ServiceAreaMatcher.from_file(Path("data/service_areas/service_areas.json"))
+    centro = matcher.catalog.by_id("es-mad-centro")
+    assert centro is not None
+
+    assert (
+        matcher._raw_zone_context_is_compatible(  # pyright: ignore[reportPrivateUsage]
+            normalize_location("Madrid city center"),
+            "madrid",
+            centro,
+        )
+        is True
+    )
+    assert (
+        matcher._raw_zone_context_is_compatible(  # pyright: ignore[reportPrivateUsage]
+            normalize_location("Barcelona center"),
+            "madrid",
+            centro,
+        )
+        is False
+    )
+
+    aliased_city = ServiceArea(
+        id="xx-new-york",
+        country="XX",
+        city="New York",
+        city_aliases=["York City"],
+        zone="Downtown",
+    )
+    aliased_matcher = ServiceAreaMatcher(ServiceAreaCatalog(areas=[aliased_city]))
+    assert (
+        aliased_matcher._zone_matches_in_text(  # pyright: ignore[reportPrivateUsage]
+            "new york", "New City York"
+        )
+        == []
+    )
+    assert (
+        aliased_matcher._raw_zone_context_is_compatible(  # pyright: ignore[reportPrivateUsage]
+            normalize_location("New City York"),
+            "new york",
+            aliased_city,
+        )
+        is False
+    )
+
+
+def test_match_uses_explicit_city_when_city_inference_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    area = ServiceArea(
+        id="xx-new-york",
+        country="XX",
+        city="New York",
+        zone="Downtown",
+    )
+    matcher = ServiceAreaMatcher(ServiceAreaCatalog(areas=[area]))
+
+    def no_city_inference(normalized_value: str) -> str | None:
+        del normalized_value
+        return None
+
+    monkeypatch.setattr(matcher, "_infer_city_key", no_city_inference)
+
+    result = matcher.match("New York", city="New York")
+
+    assert result.is_city_level is True
+    assert result.city == "New York"
+
+
+def test_match_reports_duplicate_exact_aliases_with_city_context() -> None:
+    same_city = ServiceAreaMatcher(
+        ServiceAreaCatalog(
+            areas=[
+                ServiceArea(
+                    id="xx-metro-north",
+                    country="XX",
+                    city="Metro",
+                    zone="North",
+                    aliases=["Shared district"],
+                ),
+                ServiceArea(
+                    id="xx-metro-south",
+                    country="XX",
+                    city="Metro",
+                    zone="South",
+                    aliases=["Shared district"],
+                ),
+            ]
+        )
+    )
+    same_city_result = same_city.match("Shared district")
+    assert same_city_result.status is LocationMatchStatus.AMBIGUOUS
+    assert same_city_result.city == "Metro"
+    assert same_city_result.suggestion_ids == ["xx-metro-north", "xx-metro-south"]
+
+    different_cities = ServiceAreaMatcher(
+        ServiceAreaCatalog(
+            areas=[
+                ServiceArea(
+                    id="xx-metro",
+                    country="XX",
+                    city="Metro",
+                    zone="North",
+                    aliases=["Shared district"],
+                ),
+                ServiceArea(
+                    id="xx-other",
+                    country="XX",
+                    city="Other",
+                    zone="North",
+                    aliases=["Shared district"],
+                ),
+            ]
+        )
+    )
+    different_city_result = different_cities.match("Shared district")
+    assert different_city_result.status is LocationMatchStatus.AMBIGUOUS
+    assert different_city_result.city is None
+
+
+def test_structured_zone_matching_covers_exact_and_ambiguous_results() -> None:
+    catalog = ServiceAreaCatalog(
+        areas=[
+            ServiceArea(
+                id="xx-metro-north",
+                country="XX",
+                city="Metro",
+                zone="North",
+                aliases=["Metro center"],
+            ),
+            ServiceArea(
+                id="xx-metro-south",
+                country="XX",
+                city="Metro",
+                zone="South",
+                aliases=["Metro center"],
+            ),
+        ]
+    )
+    matcher = ServiceAreaMatcher(catalog)
+
+    exact = matcher.match("Metro", zone="North")
+    assert exact.status is LocationMatchStatus.EXACT
+    assert exact.area is not None and exact.area.id == "xx-metro-north"
+
+    text_ambiguous = matcher.match("Metro the center")
+    assert text_ambiguous.status is LocationMatchStatus.AMBIGUOUS
+    assert set(text_ambiguous.suggestion_ids) == {
+        "xx-metro-north",
+        "xx-metro-south",
+    }
+
+    duplicate_zone_matcher = ServiceAreaMatcher(
+        ServiceAreaCatalog(
+            areas=[
+                ServiceArea(
+                    id="xx-metro-north-one",
+                    country="XX",
+                    city="Metro",
+                    zone="North",
+                    aliases=["Metro center"],
+                ),
+                ServiceArea(
+                    id="xx-metro-north-two",
+                    country="XX",
+                    city="Metro",
+                    zone="North",
+                    aliases=["Metro center"],
+                ),
+            ]
+        )
+    )
+    zone_ambiguous = duplicate_zone_matcher.match("Metro", zone="North")
+    assert zone_ambiguous.status is LocationMatchStatus.AMBIGUOUS
+    assert set(zone_ambiguous.suggestion_ids) == {
+        "xx-metro-north-one",
+        "xx-metro-north-two",
+    }
+
+    compatible_ambiguous = duplicate_zone_matcher.match("North", city="Metro")
+    assert compatible_ambiguous.status is LocationMatchStatus.AMBIGUOUS
+    assert set(compatible_ambiguous.suggestion_ids) == {
+        "xx-metro-north-one",
+        "xx-metro-north-two",
+    }
+
+
+def test_text_zone_matching_covers_exact_and_city_offer_fallbacks() -> None:
+    matcher = ServiceAreaMatcher.from_file(Path("data/service_areas/service_areas.json"))
+
+    exact = matcher.match("Madrid the city center")
+    assert exact.status is LocationMatchStatus.EXACT
+    assert exact.area is not None and exact.area.id == "es-mad-centro"
+
+    unknown_zone = matcher.match("Madrid north")
+    assert unknown_zone.is_city_level is True
+    assert unknown_zone.suggestion_ids == ["es-mad-centro", "es-mad-salamanca"]
+
+
+def test_composed_alias_matching_filters_other_cities_and_can_be_ambiguous() -> None:
+    filtered = ServiceAreaMatcher(
+        ServiceAreaCatalog(
+            areas=[
+                ServiceArea(
+                    id="xx-metro-downtown",
+                    country="XX",
+                    city="Metro",
+                    zone="Configured",
+                    aliases=["The downtown of Metro"],
+                ),
+                ServiceArea(
+                    id="xx-other-downtown",
+                    country="XX",
+                    city="Other",
+                    zone="Configured",
+                    aliases=["The downtown of Metro"],
+                ),
+            ]
+        )
+    )
+    exact = filtered.match("Metro", zone="downtown")
+    assert exact.status is LocationMatchStatus.EXACT
+    assert exact.area is not None and exact.area.id == "xx-metro-downtown"
+
+    ambiguous = ServiceAreaMatcher(
+        ServiceAreaCatalog(
+            areas=[
+                ServiceArea(
+                    id="xx-metro-one",
+                    country="XX",
+                    city="Metro",
+                    zone="Configured one",
+                    aliases=["The downtown of Metro"],
+                ),
+                ServiceArea(
+                    id="xx-metro-two",
+                    country="XX",
+                    city="Metro",
+                    zone="Configured two",
+                    aliases=["The downtown of Metro"],
+                ),
+            ]
+        )
+    )
+    ambiguous_result = ambiguous.match("Metro", zone="downtown")
+    assert ambiguous_result.status is LocationMatchStatus.AMBIGUOUS
+    assert set(ambiguous_result.suggestion_ids) == {"xx-metro-one", "xx-metro-two"}

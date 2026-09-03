@@ -30,11 +30,12 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./var/screening.db", validation_alias="DATABASE_URL"
     )
-    llm_model: str = Field(default="openai:gpt-5.6-luna", validation_alias="LLM_MODEL")
+    llm_model: str = Field(default="groq:openai/gpt-oss-20b", validation_alias="LLM_MODEL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openrouter_api_key: SecretStr | None = Field(
         default=None, validation_alias="OPENROUTER_API_KEY"
     )
+    groq_api_key: SecretStr | None = Field(default=None, validation_alias="GROQ_API_KEY")
     openrouter_data_collection: Literal["allow", "deny"] = Field(
         default="deny", validation_alias="OPENROUTER_DATA_COLLECTION"
     )
@@ -83,20 +84,26 @@ class Settings(BaseSettings):
     def validate_model_name(cls, value: str) -> str:
         value = value.strip()
         if not value or ":" not in value:
-            raise ValueError("LLM_MODEL must use a provider:model form, e.g. openai:gpt-5.6-luna")
+            raise ValueError(
+                "LLM_MODEL must use a provider:model form, e.g. groq:openai/gpt-oss-20b"
+            )
         provider, model_name = value.split(":", 1)
-        if provider.casefold() not in {"openai", "openrouter"}:
-            raise ValueError("LLM_MODEL provider must be 'openai' or 'openrouter'")
+        if provider.casefold() not in {"openai", "openrouter", "groq"}:
+            raise ValueError("LLM_MODEL provider must be 'openai', 'openrouter', or 'groq'")
         if not model_name.strip():
             raise ValueError("LLM_MODEL must include a non-empty model name")
         return value
 
     @property
-    def llm_provider(self) -> Literal["openai", "openrouter"]:
+    def llm_provider(self) -> Literal["openai", "openrouter", "groq"]:
         """Return the validated provider component of ``LLM_MODEL``."""
 
         provider = self.llm_model.split(":", 1)[0].casefold()
-        return "openrouter" if provider == "openrouter" else "openai"
+        if provider == "openrouter":
+            return "openrouter"
+        if provider == "groq":
+            return "groq"
+        return "openai"
 
     @property
     def llm_model_name(self) -> str:
@@ -107,17 +114,29 @@ class Settings(BaseSettings):
     def has_selected_provider_credentials(self) -> bool:
         """Report credential readiness without exposing either secret."""
 
-        selected = self.openai_api_key if self.llm_provider == "openai" else self.openrouter_api_key
+        selected = {
+            "openai": self.openai_api_key,
+            "openrouter": self.openrouter_api_key,
+            "groq": self.groq_api_key,
+        }[self.llm_provider]
         return selected is not None and bool(selected.get_secret_value().strip())
 
     @property
     def selected_provider_key_variable(self) -> str:
-        return "OPENAI_API_KEY" if self.llm_provider == "openai" else "OPENROUTER_API_KEY"
+        return {
+            "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "groq": "GROQ_API_KEY",
+        }[self.llm_provider]
 
     def require_selected_provider_api_key(self) -> str:
         """Return the selected provider key or fail without exposing its value."""
 
-        selected = self.openai_api_key if self.llm_provider == "openai" else self.openrouter_api_key
+        selected = {
+            "openai": self.openai_api_key,
+            "openrouter": self.openrouter_api_key,
+            "groq": self.groq_api_key,
+        }[self.llm_provider]
         if selected is None or not selected.get_secret_value().strip():
             raise RuntimeError(
                 f"{self.selected_provider_key_variable} is required for live LLM requests"

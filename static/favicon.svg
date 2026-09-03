@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>Delivery driver screening</title>
+  <rect width="64" height="64" rx="14" fill="#0f766e"/>
+  <path fill="#ffffff" d="M13 18h25a5 5 0 0 1 5 5v14a5 5 0 0 1-5 5H28l-8 6v-6h-7a5 5 0 0 1-5-5V23a5 5 0 0 1 5-5Zm4 9h17v-3H17v3Zm0 7h13v-3H17v3Z"/>
+  <path fill="#fbbf24" d="M46 27h4.5l5.5 6v9h-2.5a5 5 0 0 1-9.5 0H42V31l4-4Zm1.3 3.5L45 33h7l-3-3.5h-1.7ZM48.8 44a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z"/>
+</svg>

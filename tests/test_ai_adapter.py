@@ -13,9 +13,11 @@ from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedMode
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.groq import GroqModel, GroqModelSettings
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.groq import GroqProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from candidate_screening.ai.interpreter import AIProviderError, InterpreterDependencies
@@ -215,7 +217,15 @@ def test_adapter_helpers_and_injected_factory_cover_compatibility_paths() -> Non
         )
 
 
-def test_model_factory_builds_openai_and_openrouter_models() -> None:
+def test_model_factory_builds_groq_openai_and_openrouter_models() -> None:
+    groq_settings = Settings(
+        llm_model="groq:openai/gpt-oss-20b",
+        groq_api_key=SecretStr("test-groq"),
+        llm_timeout_seconds=23,
+        llm_max_output_tokens=321,
+    )
+    groq = PydanticAIModelFactory().create(groq_settings)
+
     openai = PydanticAIModelFactory().create(
         Settings(llm_model="openai:gpt-test", openai_api_key=SecretStr("test-openai"))
     )
@@ -227,6 +237,18 @@ def test_model_factory_builds_openai_and_openrouter_models() -> None:
         openrouter_require_parameters=False,
     )
     openrouter = PydanticAIModelFactory().create(openrouter_settings)
+
+    assert isinstance(groq, GroqModel)
+    assert isinstance(groq._provider, GroqProvider)
+    assert groq.model_name == "openai/gpt-oss-20b"
+    assert groq.system == "groq"
+    assert groq.profile.supports_tools is True
+    assert groq.profile.default_structured_output_mode == "tool"
+    assert cast(GroqModelSettings, _model_settings(groq_settings)) == {
+        "max_tokens": 321,
+        "timeout": 23,
+        "groq_reasoning_format": "hidden",
+    }
 
     assert isinstance(openai, OpenAIResponsesModel)
     assert openai.model_name == "gpt-test"

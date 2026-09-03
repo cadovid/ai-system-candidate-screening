@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = []
 lock_version = "4.5.0"
-content_hash = "sha256:cdb5834b25aea48d9e54f599f3b15fed622810747498156a8fec086163ebfdc3"
+content_hash = "sha256:9a2f65e676ab756d469b0ef87fcd8274b495086082486117db59930cd5225c27"
 
 [[metadata.targets]]
 requires_python = ">=3.14,<3.15"
@@ -192,6 +192,16 @@ files = [
 ]
 
 [[package]]
+name = "distro"
+version = "1.9.0"
+requires_python = ">=3.6"
+summary = "Distro - an OS platform information API"
+files = [
+    {file = "distro-1.9.0-py3-none-any.whl", hash = "sha256:7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"},
+    {file = "distro-1.9.0.tar.gz", hash = "sha256:2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed"},
+]
+
+[[package]]
 name = "fastapi"
 version = "0.141.1"
 summary = ""
@@ -254,6 +264,24 @@ summary = ""
 files = [
     {file = "griffelib-2.2.0-py3-none-any.whl", hash = "sha256:d71c3bc2bbed9f958488634fe788b843a9f705d6d2838ca32cd6c25eeb64dfc4"},
     {file = "griffelib-2.2.0.tar.gz", hash = "sha256:e1bc36fe9cd21d4b6b659b456346755e4cfdc5676c0a5214083126ee12612b3c"},
+]
+
+[[package]]
+name = "groq"
+version = "1.7.0"
+requires_python = ">=3.10"
+summary = "The official Python library for the groq API"
+dependencies = [
+    "anyio<5,>=3.5.0",
+    "distro<2,>=1.7.0",
+    "httpx<1,>=0.23.0",
+    "pydantic<3,>=1.9.0",
+    "sniffio",
+    "typing-extensions<5,>=4.14",
+]
+files = [
+    {file = "groq-1.7.0-py3-none-any.whl", hash = "sha256:cb1518f823423d4e52445859eb7d2918a927794cec12f8d5e50d9161e3690fc8"},
+    {file = "groq-1.7.0.tar.gz", hash = "sha256:d582dbb3f071b92ca339baba83af9f57ba6f46a51c34b04565d7cb9badb2785b"},
 ]
 
 [[package]]
@@ -570,9 +598,10 @@ files = [
 [[package]]
 name = "pydantic-ai-slim"
 version = "1.107.5"
-extras = ["openai", "openrouter"]
+extras = ["groq", "openai", "openrouter"]
 summary = ""
 dependencies = [
+    "groq",
     "openai",
     "pydantic-ai-slim==1.107.5",
     "tiktoken",

@@ -6,11 +6,17 @@ const root = new URL("../../", import.meta.url);
 
 test("candidate page exposes the editable voice draft controls", async () => {
   const template = await readFile(new URL("templates/candidate.html", root), "utf8");
+  assert.match(template, /<link rel="icon" href="\/favicon\.ico" type="image\/svg\+xml">/);
   assert.match(template, /id="microphone"/);
   assert.match(template, /id="interim-transcript"/);
   assert.match(template, /id="read-aloud"/);
   assert.match(template, /type="module" src="\/static\/candidate\.mjs"/);
   assert.doesNotMatch(template, /candidate\.js/);
+});
+
+test("the favicon asset is available", async () => {
+  const favicon = await readFile(new URL("static/favicon.svg", root), "utf8");
+  assert.match(favicon, /^<svg[\s>]/);
 });
 
 test("voice drafts use the existing turn API and do not persist audio", async () => {

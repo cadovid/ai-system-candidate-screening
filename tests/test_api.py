@@ -167,6 +167,16 @@ async def test_candidate_routes_require_resume_token_and_idempotency() -> None:
 
 
 @pytest.mark.asyncio
+async def test_favicon_is_served() -> None:
+    async with await _client(FakeCoordinator()) as client:
+        response = await client.get("/favicon.ico")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.content.startswith(b"<svg")
+
+
+@pytest.mark.asyncio
 async def test_internal_analytics_is_protected_and_health_is_public() -> None:
     coordinator = FakeCoordinator()
     async with await _client(coordinator) as client:

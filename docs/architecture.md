@@ -49,10 +49,12 @@ flowchart TB
     Interpreter[PydanticAIInterpreter]
     Summary[SummaryGenerator]
     Schemas[TurnInterpretation / RecruiterSummaryOutput]
-    OpenAI[OpenAI Responses model]
-    OpenRouter[OpenRouter / selected model]
+    Groq[Groq / openai/gpt-oss-20b (recommended free dev)]
+    OpenRouter[OpenRouter / DeepSeek V4 Flash Free (secondary free)]
+    OpenAI[OpenAI / selected model (explicit opt-in)]
   end
 
+  Groq -. server-side API .-> GroqAPI[(Groq OpenAI-compatible API)]
   OpenAI -. server-side API .-> OpenAIAPI[(OpenAI API)]
   OpenRouter -. server-side API .-> OpenRouterAPI[(OpenRouter API)]
 
@@ -70,10 +72,13 @@ flowchart TB
   InternalAPI --> Coordinator
   Coordinator --> Guard
   Guard --> Interpreter
+  Resolver --> Groq
   Resolver --> OpenAI
   Resolver --> OpenRouter
+  Groq --> Interpreter
   OpenAI --> Interpreter
   OpenRouter --> Interpreter
+  Groq --> Summary
   OpenAI --> Summary
   OpenRouter --> Summary
   Interpreter --> Schemas
@@ -92,7 +97,7 @@ flowchart TB
   Transitions --> Rules
 ```
 
-The candidate browser has one text composer and two optional voice adapters. Typed text, or a reviewed transcript produced by browser SpeechRecognition, is submitted to the same versioned `/turns` endpoint and enters the same coordinator/reconciliation/rules workflow; `input_mode` is provenance, not a different decision path. Assistant text is always rendered in the text UI, with optional browser `speechSynthesis` reading it aloud. Microphone audio is not sent to or persisted by this service. The separate server-side provider boundary is used only after guardrails, and both supported providers feed the same typed interpreter contract.
+The candidate browser has one text composer and two optional voice adapters. Typed text, or a reviewed transcript produced by browser SpeechRecognition, is submitted to the same versioned `/turns` endpoint and enters the same coordinator/reconciliation/rules workflow; `input_mode` is provenance, not a different decision path. Assistant text is always rendered in the text UI, with optional browser `speechSynthesis` reading it aloud. Microphone audio is not sent to or persisted by this service. The separate server-side provider boundary is used only after guardrails, and Groq, OpenRouter, and OpenAI all feed the same typed interpreter contract.
 
 ### HTTP and security boundary
 
@@ -112,7 +117,11 @@ The rule engine is pure and rerunnable. Under ruleset `2026-01`, the required fi
 
 `PydanticAIInterpreter` uses a Pydantic AI `Agent` with `TurnInterpretation` as its output type. The schema is an extraction/intent patch, not a decision schema, and rejects unknown fields. Trusted dependencies include current canonical state, pending field, active language, date, and correlation ID. Persisted history is converted to provider messages by `build_bounded_history` and limited by pair and character budgets.
 
-The model factory is the only provider-specific construction boundary. `LLM_MODEL` uses `provider:model` syntax and currently resolves either `openai:<model>` through `OpenAIResponsesModel` or `openrouter:<model>` through Pydantic AI's first-class `OpenRouterModel`/`OpenRouterProvider` ([official integration](https://pydantic.dev/docs/ai/models/openrouter/)). Both providers feed the same typed extraction and summary agents and the same coordinator. OpenRouter is configured with no model fallback and conservative data-collection/ZDR routing settings. `OPENROUTER_REQUIRE_PARAMETERS` is configurable and defaults to `false`: strict filtering can reject free endpoints that do not advertise every optional structured-tool parameter, while Pydantic output validation remains authoritative. A free-route outage or parameter mismatch becomes a safe retryable turn failure rather than an unexpected paid request. Provider keys are selected lazily from `OPENAI_API_KEY` or `OPENROUTER_API_KEY`, and are never returned to the browser or written to logs.
+The model factory is the only provider-specific construction boundary. `LLM_MODEL` uses `provider:model` syntax and currently resolves the recommended `groq:openai/gpt-oss-20b` through Groq's OpenAI-compatible API ([official compatibility reference](https://console.groq.com/docs/openai)), `openrouter:<model>` through Pydantic AI's first-class `OpenRouterModel`/`OpenRouterProvider` ([official integration](https://pydantic.dev/docs/ai/models/openrouter/)), or `openai:<model>` through OpenAI's Responses model. All three providers feed the same typed extraction and summary agents and the same coordinator. Groq is the default free development route; OpenRouter/DeepSeek is a secondary free route, and OpenAI is an explicit usage-billed choice. Provider selection is explicit and there is no cross-provider, cross-model, or paid fallback. OpenRouter is configured with no model fallback and conservative data-collection/ZDR routing settings. `OPENROUTER_REQUIRE_PARAMETERS` is configurable and defaults to `false`: strict filtering can reject free endpoints that do not advertise every optional structured-tool parameter, while Pydantic output validation remains authoritative. A free-route outage, HTTP 429, or parameter mismatch becomes a safe retryable turn failure rather than an unexpected paid request. Provider keys are selected lazily from `GROQ_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY`, and are never returned to the browser or written to logs.
+
+As a dated operational reference, Groq's [rate-limit table](https://console.groq.com/docs/rate-limits) listed 30 RPM, 1,000 RPD, 8,000 TPM, and 200,000 TPD for `openai/gpt-oss-20b` on 2026-09-03. Groq describes those values as high-level Free Plan limits; the exact organization/project limits and model availability must be checked in the account console and may change. A Groq 429 is therefore handled as provider capacity/rate limiting, not as a reason to change provider. Operators should wait for the reset, respect `retry-after` when available, reduce concurrency/token volume, or make an explicit provider switch.
+
+Groq's [data-controls reference](https://console.groq.com/docs/your-data) says inference data is not retained by default, usage metadata is always retained, and reliability/abuse logs may retain customer data for up to 30 days unless ZDR is enabled; retained customer data is stored in US GCP buckets. These are provider statements, not an application privacy guarantee. Confirm ZDR, the current [Groq DPA](https://console.groq.com/docs/legal/customer-data-processing-addendum), subprocessors, SCC/US-transfer basis, residency, retention/deletion, and legal basis before real candidate data is sent.
 
 The summary agent is a separate typed agent. It receives JSON containing the validated state and deterministic decision, not the raw transcript. A summary is accepted only if it validates, is at most 1,200 characters, and passes the deterministic safety predicate. Any provider error or unsafe output uses `_summary_fallback`, which omits free-form evidence and raw start-date text. Summary generation is intentionally after the state commit; a slow model cannot keep a database transaction open or roll back a valid screening result. The canonical result starts as `summary_status=pending`; a transient derived-write failure is logged without failing the candidate turn, and an authenticated `POST /api/v1/internal/screenings/{session_id}/summary/retry` repairs the summary without re-running screening.
 
@@ -130,6 +139,7 @@ sequenceDiagram
   participant C as TurnCoordinator
   participant G as Guardrails
   participant M as Interpreter
+  participant P as Selected provider (Groq/OpenRouter/OpenAI)
   participant D as Domain controller
   participant S as ScreeningEngine
   participant DB as Database
@@ -150,6 +160,8 @@ sequenceDiagram
     C->>D: typed safety interpretation
   else safe text
     C->>M: redacted text + bounded server history
+    M->>P: typed provider request
+    P-->>M: structured provider response
     M-->>C: TurnInterpretation
     C->>D: reconcile typed patch
   end

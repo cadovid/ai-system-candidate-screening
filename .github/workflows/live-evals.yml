@@ -6,16 +6,22 @@ on:
       model:
         description: "Provider model to evaluate"
         required: true
-        default: openai:gpt-5.6-luna
+        default: groq:openai/gpt-oss-20b
         type: choice
         options:
           - openai:gpt-5.6-luna
           - openrouter:deepseek/deepseek-v4-flash:free
+          - groq:openai/gpt-oss-20b
       budget_usd:
         description: "Operator-approved spend threshold (USD; workflow check only, not a provider billing cap)"
         required: true
         default: "1.00"
         type: string
+      run_synthetic_eval:
+        description: "Also run the longer synthetic conversation evaluation"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -28,6 +34,7 @@ jobs:
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENROUTER_DATA_COLLECTION: deny
       OPENROUTER_ZDR: "true"
       LLM_MODEL: ${{ inputs.model }}
@@ -49,6 +56,12 @@ jobs:
             openrouter:deepseek/deepseek-v4-flash:free)
               if [ -z "${OPENROUTER_API_KEY}" ]; then
                 echo "OPENROUTER_API_KEY is not configured for the selected live evaluation" >&2
+                exit 1
+              fi
+              ;;
+            groq:openai/gpt-oss-20b)
+              if [ -z "${GROQ_API_KEY}" ]; then
+                echo "GROQ_API_KEY is not configured for the selected live evaluation" >&2
                 exit 1
               fi
               ;;
@@ -86,10 +99,16 @@ jobs:
           version: 2.28.0
           cache: true
 
-      - name: Install locked runtime dependencies
-        run: pdm install --prod --frozen-lockfile
+      - name: Install locked development dependencies
+        run: pdm install --dev --frozen-lockfile
 
-      - name: Run live evaluations
+      - name: Run live provider contract smoke
+        env:
+          RUN_LIVE_PROVIDER_CONTRACT: "1"
+        run: pdm run pytest tests/live/test_provider_contract.py -m live
+
+      - name: Run optional synthetic conversation evaluation
+        if: ${{ inputs.run_synthetic_eval }}
         run: >-
           pdm run python scripts/run_evals.py --mode live --json --fail-on-error
-          --case-id happy_path --case-id english_happy_path
+          --case-id multi_field_first_answer

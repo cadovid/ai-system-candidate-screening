@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -167,6 +167,15 @@ def create_app(
     @application.get("/recruiter", response_class=HTMLResponse, include_in_schema=False)
     async def recruiter_page(request: Request) -> HTMLResponse:
         return _TEMPLATES.TemplateResponse(request, "recruiter.html", {"version": __version__})
+
+    @application.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> Response:
+        """Serve the small browser icon without a blocking file-stream task."""
+
+        return Response(
+            content=(static_dir / "favicon.svg").read_bytes(),
+            media_type="image/svg+xml",
+        )
 
     # Keep the versioned API and a short unversioned alias for local demos.
     # The alias is deliberately omitted from OpenAPI so clients have one

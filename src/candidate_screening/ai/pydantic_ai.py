@@ -9,8 +9,10 @@ from typing import Any, cast
 from pydantic_ai import Agent, RunContext, UsageLimits
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.groq import GroqModel, GroqModelSettings
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
+from pydantic_ai.providers.groq import GroqProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.settings import ModelSettings
@@ -28,8 +30,18 @@ def _model_settings(settings: Settings) -> ModelSettings:
         "max_tokens": settings.llm_max_output_tokens,
         "timeout": settings.llm_timeout_seconds,
     }
-    if settings.llm_provider != "openrouter":
+    if settings.llm_provider not in {"openrouter", "groq"}:
         return common
+    if settings.llm_provider == "groq":
+        # The locked pydantic-ai release exposes this provider-specific
+        # setting and Groq's GPT-OSS route supports it.  Suppress reasoning
+        # tokens in the candidate-facing response while keeping the native
+        # Groq provider's defaults for every other request option.
+        groq: GroqModelSettings = {
+            **common,
+            "groq_reasoning_format": "hidden",
+        }
+        return groq
     openrouter: OpenRouterModelSettings = {
         **common,
         "openrouter_usage": {"include": True},
@@ -76,7 +88,9 @@ def _provider_and_model(settings: Settings) -> tuple[Any, str]:
             base_url=settings.llm_base_url,
         )
         return provider, model_name
-    return OpenRouterProvider(api_key=api_key), model_name
+    if settings.llm_provider == "openrouter":
+        return OpenRouterProvider(api_key=api_key), model_name
+    return GroqProvider(api_key=api_key), model_name
 
 
 class PydanticAIModelFactory:
@@ -92,7 +106,9 @@ class PydanticAIModelFactory:
         provider, model_name = _provider_and_model(settings)
         if settings.llm_provider == "openai":
             return OpenAIResponsesModel(model_name, provider=provider)
-        return OpenRouterModel(model_name, provider=provider)
+        if settings.llm_provider == "openrouter":
+            return OpenRouterModel(model_name, provider=provider)
+        return GroqModel(model_name, provider=provider)
 
 
 def _extraction_instructions_for(deps: InterpreterDependencies) -> str:

@@ -28,7 +28,7 @@ The browser candidate view is `/`; the recruiter view is `/recruiter`. Both are 
 
 The bundled catalogue and FAQ are fictional fixtures for demonstration. They include Madrid, Barcelona, Valencia, Sevilla, Málaga, and selected Mexico City, Guadalajara, and Monterrey areas; they are not a real employer’s coverage map, job description, pay policy, or hiring criteria. Every FAQ entry is marked `fictional_demo: true`. Replace both data files and have the criteria reviewed before any real use.
 
-Without the selected provider key, the app can start, serve health checks, create conversations, and run deterministic evaluations, but a live candidate turn returns a safe temporary provider-unavailable response. That is deliberate: importing the app and exercising infrastructure must not require a provider credential. The same screening agent can use OpenAI or OpenRouter through configuration; provider selection never changes deterministic qualification rules.
+Without the selected provider key, the app can start, serve health checks, create conversations, and run deterministic evaluations, but a live candidate turn returns a safe temporary provider-unavailable response. That is deliberate: importing the app and exercising infrastructure must not require a provider credential. The same screening agent can use the recommended Groq free development route, the secondary OpenRouter free route, or OpenAI through configuration; provider selection never changes deterministic qualification rules.
 
 ### Browser voice mode
 
@@ -75,10 +75,12 @@ flowchart LR
   G -->|safe text only| LLM[Pydantic AI interpreter]
   subgraph PROVIDER[Separate server-side LLM provider boundary]
     CONFIG[LLM_MODEL + selected provider key] --> RESOLVE[Provider/model resolver]
-    RESOLVE --> OA[OpenAI Responses]
-    RESOLVE --> OR[OpenRouter / DeepSeek V4 Flash Free]
+    RESOLVE --> GQ[Groq / GPT-OSS 20B (free dev)]
+    RESOLVE --> OR[OpenRouter / DeepSeek V4 Flash Free (secondary)]
+    RESOLVE --> OA[OpenAI Responses (explicit opt-in)]
     OA -->|typed provider response| LLM
     OR -->|typed provider response| LLM
+    GQ -->|typed provider response| LLM
   end
   LLM -->|TurnInterpretation: typed patch| REC[Reconciliation]
   REC --> CAT[Service-area matcher]
@@ -192,7 +194,8 @@ Copying `.env.example` supplies the main demo settings. Defaults below are loade
 | `APP_ENV` | `development` | Environment label. |
 | `LOG_LEVEL` | `INFO` | Application logging level. |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./var/screening.db` | Async SQLAlchemy database. |
-| `LLM_MODEL` | `openai:gpt-5.6-luna` | Required `provider:model` selector. Use `openrouter:deepseek/deepseek-v4-flash:free` for the requested OpenRouter development route. |
+| `LLM_MODEL` | `groq:openai/gpt-oss-20b` | Required `provider:model` selector. This is the recommended free development route. Use `openrouter:deepseek/deepseek-v4-flash:free` for the secondary free route or `openai:gpt-5.6-luna` for the explicit OpenAI route. |
+| `GROQ_API_KEY` | unset | Required only when a `groq:*` model is selected. Keep it server-side; the standard Groq endpoint is selected by the provider adapter. |
 | `OPENAI_API_KEY` | unset | Required only when an `openai:*` model is selected. |
 | `OPENROUTER_API_KEY` | unset | Required only when an `openrouter:*` model is selected. The key is issued by OpenRouter. |
 | `OPENROUTER_DATA_COLLECTION` | `deny` | Exclude downstream routes that declare non-transient data collection. This conservative setting can make a free route unavailable. |
@@ -217,14 +220,14 @@ The in-process rate and concurrency controls are only a last line of defence for
 
 ### Choosing an LLM provider
 
-`LLM_MODEL` is the single provider/model selector. The application constructs the same Pydantic AI extraction and summary agents for either provider:
+`LLM_MODEL` is the single provider/model selector. The application constructs the same Pydantic AI extraction and summary agents for each supported provider. The checked-in default is Groq’s OpenAI-compatible `openai/gpt-oss-20b`, intended as a free development route; it is not a production availability, privacy, residency, or quality guarantee.
 
 ```dotenv
-# OpenAI (default)
-LLM_MODEL=openai:gpt-5.6-luna
-OPENAI_API_KEY=...
+# Recommended free development route: Groq GPT-OSS 20B
+LLM_MODEL=groq:openai/gpt-oss-20b
+GROQ_API_KEY=...
 
-# Or OpenRouter's requested free development route
+# Secondary free route: OpenRouter / DeepSeek (verify current availability)
 LLM_MODEL=openrouter:deepseek/deepseek-v4-flash:free
 OPENROUTER_API_KEY=...
 OPENROUTER_DATA_COLLECTION=deny
@@ -232,9 +235,27 @@ OPENROUTER_ZDR=true
 # For the currently available zero-cost router instead:
 # LLM_MODEL=openrouter:openrouter/free
 # OPENROUTER_REQUIRE_PARAMETERS=false
+
+# Usage-billed route: OpenAI (explicit opt-in)
+# LLM_MODEL=openai:gpt-5.6-luna
+# OPENAI_API_KEY=...
 ```
 
-Only the key for the selected provider is required. OpenRouter routing is deliberately configured with no model fallback, so a failed free route returns a safe retryable response instead of silently using a paid model. `OPENROUTER_REQUIRE_PARAMETERS=false` is the practical default for the free router: its provider catalog changes and strict parameter filtering can otherwise return `404 No endpoints found that can handle the requested parameters` even when the router has compatible free models. Pydantic AI still validates the structured output and the application still owns deterministic qualification. The requested DeepSeek free slug is configurable but must be verified against OpenRouter's current availability before a live demo; the current model catalog may expose the paid DeepSeek model without its `:free` variant. For a zero-cost demo when that specific slug is absent, use `openrouter:openrouter/free`, which selects an available free model and can vary model-to-model. Free routes remain rate-limited and may be temporarily unavailable; downstream provider retention and data-use policies still require review before sending real candidate data.
+Only the key for the selected provider is required. To set up Groq locally, copy `.env.example` to `.env`, create a Groq API key, set `GROQ_API_KEY`, and leave `LLM_MODEL=groq:openai/gpt-oss-20b`; restart the development server after changing either value. To switch providers, change `LLM_MODEL` and the matching key together, then restart. A key’s presence does not select a provider, and the application never silently falls back to another provider, model, or paid route.
+
+OpenRouter routing is deliberately configured with no model fallback, so a failed free route returns a safe retryable response instead of silently using a paid model. `OPENROUTER_REQUIRE_PARAMETERS=false` is the practical default for the free router: its provider catalog changes and strict parameter filtering can otherwise return `404 No endpoints found that can handle the requested parameters` even when the router has compatible free models. Pydantic AI still validates the structured output and the application still owns deterministic qualification. The requested DeepSeek free slug is configurable but must be verified against OpenRouter’s current availability before a live demo; the current model catalog may expose the paid DeepSeek model without its `:free` variant. For a zero-cost demo when that specific slug is absent, use `openrouter:openrouter/free`, which selects an available free model and can vary model-to-model.
+
+#### Groq free quota and 429 troubleshooting (checked 2026-09-03)
+
+Groq’s [official rate-limit reference](https://console.groq.com/docs/rate-limits) currently lists these high-level Free Plan limits for `openai/gpt-oss-20b`: **30 RPM**, **1,000 RPD**, **8,000 TPM**, and **200,000 TPD**. The [model page](https://console.groq.com/docs/model/openai/gpt-oss-20b) and [structured-output reference](https://console.groq.com/docs/structured-outputs) document the model and its schema support. These figures are a dated reference, not a promise: Groq says the exact limits are account/organization/project dependent and may change, so check the account Limits page before a live run. A free quota can also be temporarily unavailable.
+
+If Groq returns HTTP `429`, it may be the requests-per-minute/day or tokens-per-minute/day limit. Wait for the provider reset (honour `retry-after` when available), reduce parallel turns/history/output, and check the selected project’s usage and limits. The adapter exposes a bounded retryable `provider_rate_limited` failure and does not change provider or model. To make another attempt after a failed turn, use a new idempotency key; reusing the old key intentionally replays its stored failed response. If the route remains unavailable, switch explicitly as described above or run the provider-free deterministic evaluator.
+
+#### Optional live-evaluation contract
+
+Live evaluation is manual and opt-in. It uses an allowlisted provider/model, the corresponding secret, synthetic fixture conversations, and a caller-entered spend approval threshold. The threshold is an operator gate, not a billing cap; configure a provider/project quota and alerts separately. Groq’s free plan is the recommended development route but does not guarantee capacity or zero cost beyond its current quota. Deterministic evaluation remains the default CI gate, and no live contract permits sending real candidate data before the privacy and processing review below is complete.
+
+The native Groq adapter contract is also opt-in: with `GROQ_API_KEY` set, run `RUN_LIVE_PROVIDER_CONTRACT=1 pdm run pytest -m live tests/live`. This makes an external request to `groq:openai/gpt-oss-20b` and verifies a typed interpretation; it is skipped unless the flag and key are present and is not part of the ordinary deterministic suite.
 
 ## HTTP API quickstart
 
@@ -294,6 +315,8 @@ The UI discloses that it is automated, explains the screening purpose, allows op
 
 Prompt-injection or sensitive-data turns do not mutate canonical screening facts or reach the model; the assistant stays on task. Provider failures return a retryable safe message and preserve the previous facts. Generated recruiter summaries are limited to validated state and a deterministic decision, reject prompt/PII/protected-attribute-like content, and fall back to a factual template. Audit events contain operational metadata rather than a candidate-ranking score. Recruiters can record `advance`, `reject`, `needs_review`, `qualified`, or `disqualified` reviews through the protected API.
 
+The recommended Groq route still requires a provider privacy and transfer review. Groq’s [current data-controls documentation](https://console.groq.com/docs/your-data), checked 2026-09-03, says inference customer data is not retained by default, while usage metadata is always retained; reliability or abuse investigations may retain inputs/outputs for up to 30 days unless Zero Data Retention (ZDR) is enabled. Groq also states that retained customer data is stored in GCP buckets in the United States. ZDR is an organization setting in Groq Data Controls, not an application guarantee, and it does not cover this app’s database, logs, backups, browser speech services, or any other channel. Before real candidate use, verify the selected project’s controls and current [Groq DPA](https://console.groq.com/docs/legal/customer-data-processing-addendum), subprocessors, retention/deletion terms, SCC/US-transfer basis, residency, and legal basis. OpenRouter remains subject to its downstream providers’ policies; its ZDR/data-collection settings do not establish EU residency or suitability for candidate data.
+
 This repository is an engineering demonstration, not a privacy notice, DPIA, employment policy, or legal opinion. It has no automated deletion worker, subject-rights workflow, consent/legal-basis configuration, tenant isolation, key rotation, production identity integration, or fairness evidence. Those are deployment requirements, not implied by the demo controls.
 
 ## Docker and deployment
@@ -310,7 +333,7 @@ The included `render.yaml` describes a small Render Docker web service with one 
 
 ## CI and live evaluations
 
-`.github/workflows/ci.yml` runs on pushes and pull requests: locked dev install, Ruff format check/lint, strict Pyright, pytest with coverage, migration smoke test, Docker build, and a `/healthz` container smoke test. `.github/workflows/live-evals.yml` is manual-only and supports the explicit `openai:gpt-5.6-luna` and `openrouter:deepseek/deepseek-v4-flash:free` choices. It requires only the secret for the selected provider, runs a small bilingual smoke subset, and validates a caller-supplied USD approval threshold of at most 5.00. That threshold is an operator approval gate only: the workflow and evaluator do not cap provider billing, so configure a provider/project quota separately before running live mode. OpenRouter's free quota and route availability are volatile; the workflow never substitutes another model. Live mode can incur provider cost and latency; deterministic mode is the default and should gate ordinary changes.
+`.github/workflows/ci.yml` runs on pushes and pull requests: locked dev install, Ruff format check/lint, strict Pyright, pytest with coverage, migration smoke test, Docker build, and a `/healthz` container smoke test. `.github/workflows/live-evals.yml` is manual-only and supports the explicit `groq:openai/gpt-oss-20b` (recommended free development route), `openrouter:deepseek/deepseek-v4-flash:free` (secondary free route), and `openai:gpt-5.6-luna` choices. It requires only the secret for the selected provider, runs a small synthetic smoke subset, and validates a caller-supplied USD approval threshold of at most 5.00. That threshold is an operator approval gate only: the workflow and evaluator do not cap provider billing, so configure a provider/project quota separately before running live mode. Groq and OpenRouter free quotas and route availability are volatile; the workflow never substitutes another model. Live mode can incur provider cost and latency; deterministic mode is the default and should gate ordinary changes.
 
 ## EU orientation (checked 2026-09-02)
 

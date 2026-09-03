@@ -126,12 +126,18 @@ def test_logging_formatter_hashes_identifiers_and_redacts_untrusted_text() -> No
         exc_info=None,
     )
     record.conversation_id = "conversation-secret"
+    record.llm_provider = "groq"
+    record.required_environment_variable = "GROQ_API_KEY"
+    record.provider_error_category = "rate_limited"
     rendered = PiiSafeJsonFormatter().format(record)
     payload = json.loads(rendered)
 
     assert "alice@example.test" not in rendered
     assert "hunter2" not in rendered
     assert payload["conversation_id"] == hashlib.sha256(b"conversation-secret").hexdigest()[:16]
+    assert payload["llm_provider"] == "groq"
+    assert payload["required_environment_variable"] == "GROQ_API_KEY"
+    assert payload["provider_error_category"] == "rate_limited"
 
 
 @pytest.mark.asyncio
