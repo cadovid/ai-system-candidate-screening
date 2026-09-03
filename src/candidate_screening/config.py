@@ -39,6 +39,9 @@ class Settings(BaseSettings):
         default="deny", validation_alias="OPENROUTER_DATA_COLLECTION"
     )
     openrouter_zdr: bool = Field(default=True, validation_alias="OPENROUTER_ZDR")
+    openrouter_require_parameters: bool = Field(
+        default=False, validation_alias="OPENROUTER_REQUIRE_PARAMETERS"
+    )
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
     llm_timeout_seconds: float = Field(
         default=15.0, ge=1.0, le=120.0, validation_alias="LLM_TIMEOUT_SECONDS"

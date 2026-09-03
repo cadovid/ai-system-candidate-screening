@@ -66,6 +66,20 @@ def test_only_explicit_license_and_area_criteria_disqualify_or_qualify() -> None
     assert ScreeningField.LOCATION in decision.missing_fields
 
 
+def test_confirmed_city_scope_is_eligible_without_selecting_a_zone() -> None:
+    state = complete_state().model_copy(deep=True)
+    state.location = LocationState(
+        raw_value="Madrid",
+        normalized_value="madrid",
+        city="Madrid",
+        service_area_ids=["es-mad-centro", "es-mad-salamanca"],
+        matched_name="Madrid — any configured area (Centro, Salamanca)",
+        match_status=LocationMatchStatus.EXACT,
+        confirmed=True,
+    )
+    assert evaluate_screening(state).status is ScreeningStatus.QUALIFIED
+
+
 def test_service_area_exact_lookup_handles_duplicate_alias_entries(
     service_area_matcher: ServiceAreaMatcher,
 ) -> None:

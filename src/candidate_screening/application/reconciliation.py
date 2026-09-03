@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from candidate_screening.ai.schemas import (
     ExtractedDeliveryExperience,
+    ExtractedLocation,
     ExtractedValue,
     StartAvailabilityExtraction,
     TurnIntent,
@@ -30,7 +31,7 @@ from candidate_screening.domain.models import (
     StartDatePrecision,
     ValidationIssue,
 )
-from candidate_screening.domain.service_areas import ServiceAreaMatcher
+from candidate_screening.domain.service_areas import ServiceAreaMatch, ServiceAreaMatcher
 
 
 @dataclass(slots=True)
@@ -65,12 +66,22 @@ def _same_value(current: Any, proposed: Any) -> bool:
     if isinstance(proposed, SourcedValue):
         proposed = cast(SourcedValue[Any], proposed).value
     if isinstance(current, LocationState) and isinstance(proposed, LocationState):
-        if current.service_area_id or proposed.service_area_id:
+        if (
+            current.service_area_id
+            or proposed.service_area_id
+            or current.service_area_ids
+            or proposed.service_area_ids
+        ):
             return (
                 current.service_area_id == proposed.service_area_id
+                and current.service_area_ids == proposed.service_area_ids
                 and current.match_status == proposed.match_status
             )
-        return current.normalized_value == proposed.normalized_value
+        return (
+            current.city == proposed.city
+            and current.normalized_value == proposed.normalized_value
+            and current.match_status == proposed.match_status
+        )
     if isinstance(current, DeliveryExperience) and isinstance(proposed, DeliveryExperience):
         return current.years == proposed.years and [
             item.casefold() for item in current.platforms
@@ -138,6 +149,56 @@ def _apply_pending(state: ScreeningState, now: datetime) -> list[ScreeningField]
     state.current_field = field
     _ = now
     return changed
+
+
+def _location_raw_value(patch: ExtractedLocation) -> str:
+    """Build a bounded raw location string from a typed extraction patch."""
+
+    raw = patch.raw_value or " ".join(part for part in (patch.city, patch.zone) if part)
+    return raw.strip()
+
+
+def _location_from_match(
+    patch: ExtractedLocation,
+    *,
+    raw: str,
+    match: ServiceAreaMatch,
+    message_id: str | None,
+) -> LocationState:
+    """Convert a matcher result into canonical, provenance-bearing state."""
+
+    return LocationState(
+        raw_value=raw,
+        normalized_value=match.normalized_value,
+        city=match.city,
+        service_area_id=match.area.id if match.area else None,
+        matched_name=match.area.display_name if match.area else match.city,
+        match_status=match.status,
+        suggestion_ids=match.suggestion_ids,
+        confirmed=match.status is LocationMatchStatus.EXACT and match.area is not None,
+        evidence=_evidence(patch.evidence, message_id=message_id),
+    )
+
+
+def _accepted_city_location(
+    location: LocationState,
+    *,
+    area_names: list[str],
+) -> LocationState:
+    """Represent an explicit "any configured area" confirmation safely."""
+
+    city = location.city or ""
+    zones = ", ".join(area_names)
+    matched_name = f"{city} — any configured area ({zones})" if zones else city
+    return location.model_copy(
+        update={
+            "service_area_id": None,
+            "service_area_ids": list(location.suggestion_ids),
+            "matched_name": matched_name,
+            "match_status": LocationMatchStatus.EXACT,
+            "confirmed": True,
+        }
+    )
 
 
 def _apply_scalar_patch(
@@ -229,12 +290,34 @@ def reconcile_interpretation(
         next_state.disclosure_acknowledged = True
 
     pending_unresolved = False
+    pending_location_applied = False
+
+    # The browser language selector sends an explicit language-only
+    # interpretation.  It is a control event, not an unanswered candidate
+    # value: changing language while a city/zone confirmation is pending must
+    # not consume a clarification attempt or trigger recruiter review.
+    language_only = (
+        interpretation.explicit_language is not None
+        and interpretation.confirmation is None
+        and interpretation.final_confirmation is None
+        and interpretation.full_name is None
+        and interpretation.drivers_license is None
+        and interpretation.location is None
+        and interpretation.availability is None
+        and interpretation.preferred_schedule is None
+        and interpretation.delivery_experience is None
+        and interpretation.start_availability is None
+        and not interpretation.candidate_questions
+    )
+    if language_only:
+        return ReconciliationResult(next_state)
 
     if next_state.pending_confirmation is not None:
+        pending = next_state.pending_confirmation
         if interpretation.confirmation is True:
             changed.extend(_apply_pending(next_state, timestamp))
+            pending_location_applied = pending.field is ScreeningField.LOCATION
         elif interpretation.confirmation is False:
-            pending = next_state.pending_confirmation
             # A one-item fuzzy suggestion keeps the unresolved match and
             # evidence in canonical state while awaiting confirmation.  On a
             # negative answer there is no trusted location to retain, so
@@ -247,8 +330,77 @@ def reconcile_interpretation(
                 and next_state.location.service_area_id is None
             ):
                 next_state.location = LocationState()
+            elif pending.field is ScreeningField.LOCATION and pending.reason == "service_area_city":
+                # A recognized city plus a negative answer is a deterministic
+                # outside-service-area result.  Keep the interpreted city and
+                # offered zones for the rejection message, but do not retain
+                # the pending city as an eligible location.
+                next_state.location = next_state.location.model_copy(
+                    update={
+                        "service_area_id": None,
+                        "service_area_ids": [],
+                        "match_status": LocationMatchStatus.UNSUPPORTED,
+                        "confirmed": False,
+                    }
+                )
+                changed.append(ScreeningField.LOCATION)
             next_state.pending_confirmation = None
             next_state.candidate_confirmed = False
+            pending_location_applied = pending.field is ScreeningField.LOCATION
+        elif (
+            pending.field is ScreeningField.LOCATION
+            and pending.reason == "service_area_city"
+            and interpretation.location is not None
+            and interpretation.location.provided
+        ):
+            # A candidate may answer the city offer with a concrete zone
+            # instead of yes/no.  Accept it only when the exact zone is one of
+            # the options previously derived from that city.
+            location_patch = interpretation.location
+            raw_location = _location_raw_value(location_patch)
+            match = (
+                service_area_matcher.match(
+                    raw_location,
+                    city=location_patch.city,
+                    zone=location_patch.zone,
+                )
+                if raw_location
+                and not location_patch.ambiguous
+                and location_patch.confidence >= 0.55
+                else None
+            )
+            proposed = pending.proposed_value
+            proposed_mapping = cast(dict[str, Any], proposed) if isinstance(proposed, dict) else {}
+            allowed_ids = {
+                str(area_id)
+                for area_id in proposed_mapping.get("service_area_ids", [])
+                if isinstance(area_id, str)
+            }
+            if match is not None and match.status is LocationMatchStatus.EXACT and match.area:
+                if match.area.id in allowed_ids:
+                    next_state.location = _location_from_match(
+                        location_patch,
+                        raw=raw_location,
+                        match=match,
+                        message_id=message_id,
+                    )
+                    next_state.pending_confirmation = None
+                    next_state.candidate_confirmed = False
+                    next_state.current_field = ScreeningField.LOCATION
+                    changed.append(ScreeningField.LOCATION)
+                    pending_location_applied = True
+                else:
+                    pending_unresolved = True
+            else:
+                pending_unresolved = True
+            if pending_unresolved:
+                issues.append(
+                    _issue(
+                        ScreeningField.LOCATION,
+                        "confirmation_required",
+                        "location.city_confirmation_required",
+                    )
+                )
         else:
             pending_unresolved = True
             issues.append(
@@ -320,13 +472,12 @@ def reconcile_interpretation(
 
     if (
         not pending_unresolved
+        and not pending_location_applied
         and interpretation.location is not None
         and interpretation.location.provided
     ):
         patch_location = interpretation.location
-        raw = patch_location.raw_value or " ".join(
-            part for part in (patch_location.city, patch_location.zone) if part
-        )
+        raw = _location_raw_value(patch_location)
         if not raw or patch_location.ambiguous or patch_location.confidence < 0.55:
             issues.append(
                 _issue(
@@ -334,16 +485,16 @@ def reconcile_interpretation(
                 )
             )
         else:
-            match = service_area_matcher.match(raw)
-            location = LocationState(
-                raw_value=raw,
-                normalized_value=match.normalized_value,
-                service_area_id=match.area.id if match.area else None,
-                matched_name=match.area.display_name if match.area else None,
-                match_status=match.status,
-                suggestion_ids=match.suggestion_ids,
-                confirmed=match.status is LocationMatchStatus.EXACT,
-                evidence=_evidence(patch_location.evidence, message_id=message_id),
+            match = service_area_matcher.match(
+                raw,
+                city=patch_location.city,
+                zone=patch_location.zone,
+            )
+            location = _location_from_match(
+                patch_location,
+                raw=raw,
+                match=match,
+                message_id=message_id,
             )
             if (
                 match.status is LocationMatchStatus.NEEDS_CONFIRMATION
@@ -413,6 +564,52 @@ def reconcile_interpretation(
                             "location.confirmation_required",
                         )
                     )
+            elif match.is_city_level:
+                # A known city without a concrete zone is not rejected and is
+                # not silently mapped to the first area.  Ask the candidate
+                # whether they can cover any configured zone in that city.
+                area_names = [area.zone for area in match.suggestions]
+                accepted_location = _accepted_city_location(
+                    location,
+                    area_names=area_names,
+                )
+                if (
+                    next_state.location.match_status is LocationMatchStatus.EXACT
+                    and next_state.location.confirmed
+                ):
+                    # Preserve an already trusted exact area when the
+                    # candidate repeats only its city.  A different city is a
+                    # correction and therefore requires the usual explicit
+                    # replacement confirmation.
+                    if next_state.location.city == location.city:
+                        pass
+                    elif not _set_or_request_confirmation(
+                        next_state,
+                        field=ScreeningField.LOCATION,
+                        proposed_value=accepted_location,
+                        current_value=next_state.location,
+                        correction=patch_location.correction,
+                        prompt="¿Confirmas esta ciudad? / Please confirm this city?",
+                        now=timestamp,
+                    ):
+                        issues.append(
+                            _issue(
+                                ScreeningField.LOCATION,
+                                "confirmation_required",
+                                "location.confirmation_required",
+                            )
+                        )
+                else:
+                    next_state.location = location
+                    next_state.pending_confirmation = PendingConfirmation(
+                        field=ScreeningField.LOCATION,
+                        proposed_value=accepted_location.model_dump(mode="json"),
+                        prompt="",
+                        reason="service_area_city",
+                        created_at=timestamp,
+                    )
+                    changed.append(ScreeningField.LOCATION)
+                    next_state.candidate_confirmed = False
             elif match.status is LocationMatchStatus.AMBIGUOUS:
                 # Keep the evidence and suggestions, but never select one of
                 # several areas automatically.  If a trusted location already

@@ -36,7 +36,12 @@ def _model_settings(settings: Settings) -> ModelSettings:
         "openrouter_reasoning": {"enabled": False},
         "openrouter_provider": {
             "allow_fallbacks": False,
-            "require_parameters": True,
+            # Free-router endpoints advertise slightly different optional
+            # parameter sets. Strict filtering can turn otherwise valid
+            # structured-tool requests into a 404. The Pydantic output schema
+            # remains authoritative and validates the returned tool/text
+            # payload; cross-provider paid-model fallback is still disabled.
+            "require_parameters": settings.openrouter_require_parameters,
             "data_collection": settings.openrouter_data_collection,
             "zdr": settings.openrouter_zdr,
         },

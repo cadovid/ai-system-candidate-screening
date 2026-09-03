@@ -175,7 +175,7 @@ class ConversationController:
             return ConversationTurnResult(
                 next_state,
                 decision,
-                self._disqualification_message(language, decision),
+                self._disqualification_message(language, decision, next_state),
                 changed_fields=reconciliation.changed_fields,
             )
         if decision.status is ScreeningStatus.QUALIFIED:
@@ -197,7 +197,17 @@ class ConversationController:
             field = reconciliation.issues[0].field or self.screening_engine.next_field(next_state)
             if field is not None:
                 next_state.current_field = field
-            prompt = self._clarification(language, field)
+            if (
+                next_state.pending_confirmation is not None
+                and next_state.pending_confirmation.reason == "service_area_city"
+            ):
+                # Keep the complete city-area offer visible after an
+                # ambiguous, off-topic, or question-only reply; a generic
+                # location clarification would hide the yes/no action the
+                # candidate still needs to resolve.
+                prompt = self._pending_prompt(language, next_state.pending_confirmation)
+            else:
+                prompt = self._clarification(language, field)
         elif next_state.pending_confirmation is not None:
             next_state.current_field = next_state.pending_confirmation.field
             prompt = self._pending_prompt(language, next_state.pending_confirmation)
@@ -270,18 +280,45 @@ class ConversationController:
             else "¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos."
         )
 
-    @staticmethod
-    def _disqualification_message(language: Language, decision: ScreeningDecision) -> str:
+    def _disqualification_message(
+        self,
+        language: Language,
+        decision: ScreeningDecision,
+        state: ScreeningState,
+    ) -> str:
         if "no_drivers_license" in decision.reason_codes:
             return (
                 "Thanks for your time. This role requires a valid driver's licence, so we cannot continue this screening."
                 if language is Language.EN
                 else "Gracias por tu tiempo. Este puesto requiere una licencia de conducir vigente, así que no podemos continuar con esta evaluación."
             )
+        location = state.location
+        raw_value = (
+            location.raw_value or location.matched_name or "the location you provided"
+        ).strip()
+        city = location.city
+        offered_areas = [
+            area
+            for area_id in location.suggestion_ids
+            if (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
+        ]
+        zones = ", ".join(area.zone for area in offered_areas)
+        if city and zones:
+            return (
+                f"Thanks for your time. I understood your location as “{raw_value}” in {city}. "
+                f"The configured delivery areas in {city} are: {zones}. "
+                "Because you cannot deliver in any of those areas, we cannot continue this screening."
+                if language is Language.EN
+                else f"Gracias por tu tiempo. He interpretado tu ubicación como «{raw_value}» en {city}. "
+                f"Las zonas de reparto configuradas en {city} son: {zones}. "
+                "Como no puedes repartir en ninguna de ellas, no podemos continuar con esta evaluación."
+            )
         return (
-            "Thanks for your time. This role is currently limited to the configured service areas, so we cannot continue this screening."
+            f"Thanks for your time. I understood your delivery area as “{raw_value}”. "
+            "It is not one of the configured service areas, so we cannot continue this screening."
             if language is Language.EN
-            else "Gracias por tu tiempo. Actualmente este puesto está limitado a las zonas de servicio configuradas, así que no podemos continuar con esta evaluación."
+            else f"Gracias por tu tiempo. He interpretado tu zona de reparto como «{raw_value}». "
+            "No está entre las zonas de servicio configuradas, así que no podemos continuar con esta evaluación."
         )
 
     @staticmethod
@@ -330,9 +367,28 @@ class ConversationController:
             else "No he podido verificar ese dato después de varios intentos. Una persona reclutadora revisará tu solicitud."
         )
 
-    @staticmethod
-    def _pending_prompt(language: Language, pending: PendingConfirmation) -> str:
+    def _pending_prompt(self, language: Language, pending: PendingConfirmation) -> str:
         """Render a pending correction/suggestion in the active language."""
+
+        if pending.reason == "service_area_city":
+            proposed = pending.proposed_value
+            proposed_mapping = cast(dict[str, Any], proposed) if isinstance(proposed, dict) else {}
+            city = str(proposed_mapping.get("city") or "the city you provided")
+            area_ids = proposed_mapping.get("service_area_ids", [])
+            zones = [
+                area.zone
+                for area_id in area_ids
+                if isinstance(area_id, str)
+                and (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
+            ]
+            zone_text = ", ".join(zones) or "the configured areas"
+            return (
+                f"I understood {city}. The configured delivery areas in {city} are: {zone_text}. "
+                "Can you deliver in any of these areas? Please answer yes or no."
+                if language is Language.EN
+                else f"He entendido {city}. Las zonas de reparto configuradas en {city} son: {zone_text}. "
+                "¿Puedes repartir en alguna de estas zonas? Responde sí o no."
+            )
 
         if pending.reason == "service_area_suggestion":
             proposed = pending.proposed_value

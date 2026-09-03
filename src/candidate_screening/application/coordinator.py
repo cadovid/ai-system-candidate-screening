@@ -526,6 +526,9 @@ class TurnCoordinator:
                             dependencies,
                             message_history=bounded_history,
                         )
+                        interpreted = self._recover_unambiguous_confirmation(
+                            interpreted, reservation, guardrail.message
+                        )
                         interpreted = self._recover_unambiguous_license_answer(
                             interpreted, reservation, guardrail.message
                         )
@@ -631,6 +634,50 @@ class TurnCoordinator:
 
     # Compatibility alias used by HTTP adapters and tests.
     handle_turn = process_turn
+
+    @staticmethod
+    def _recover_unambiguous_confirmation(
+        interpreted: InterpreterResult,
+        reservation: _Reservation,
+        message: str,
+    ) -> InterpreterResult:
+        """Recover an exact yes/no response to a pending proposal.
+
+        Confirmation is a small closed vocabulary owned by the application.
+        Recovering an exact one-token answer protects city-area offers and
+        correction prompts from a provider that returns a valid schema but
+        omits the ``confirmation`` flag.  Longer prose remains model-owned so
+        the application never guesses intent from arbitrary text.
+        """
+
+        interpretation = interpreted.interpretation
+        if (
+            reservation.state.pending_confirmation is None
+            or interpretation.confirmation is not None
+        ):
+            return interpreted
+        normalized = " ".join(message.casefold().split())
+        values = {
+            "yes": True,
+            "y": True,
+            "sí": True,
+            "si": True,
+            "true": True,
+            "correct": True,
+            "correcto": True,
+            "vale": True,
+            "no": False,
+            "n": False,
+            "false": False,
+            "nope": False,
+        }
+        value = values.get(normalized)
+        if value is None:
+            return interpreted
+        return replace(
+            interpreted,
+            interpretation=interpretation.model_copy(update={"confirmation": value}),
+        )
 
     @staticmethod
     def _recover_unambiguous_license_answer(

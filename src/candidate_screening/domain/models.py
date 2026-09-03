@@ -62,14 +62,23 @@ class LocationState(DomainModel):
 
     raw_value: str | None = Field(default=None, max_length=300)
     normalized_value: str | None = Field(default=None, max_length=300)
+    # Canonical city inferred by the deterministic matcher.  A city can be
+    # known while its zone is still unresolved, so it is kept independently
+    # from the selected service-area identifier.
+    city: str | None = Field(default=None, max_length=120)
     service_area_id: str | None = Field(default=None, max_length=100)
+    # When a candidate confirms they can deliver in any configured area of a
+    # city, retain the complete accepted set rather than selecting a zone by
+    # guesswork.  ``service_area_id`` remains the field for a single exact
+    # area; this list is the explicit city-scope alternative.
+    service_area_ids: list[str] = Field(default_factory=list, max_length=5)
     matched_name: str | None = Field(default=None, max_length=300)
     match_status: LocationMatchStatus = LocationMatchStatus.UNRESOLVED
     suggestion_ids: list[str] = Field(default_factory=list, max_length=5)
     confirmed: bool = False
     evidence: Evidence = Field(default_factory=Evidence)
 
-    @field_validator("raw_value", "normalized_value", "service_area_id", "matched_name")
+    @field_validator("raw_value", "normalized_value", "city", "service_area_id", "matched_name")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         return value.strip() if value is not None and value.strip() else None

@@ -46,7 +46,15 @@ def _dependencies(language: Language = Language.EN) -> InterpreterDependencies:
 
 
 def _settings() -> Settings:
-    return Settings(llm_max_retries=0, llm_timeout_seconds=1)
+    # Keep adapter tests independent of a developer's private .env.  These
+    # tests inject fake models, so no provider credential should be loaded.
+    return Settings(
+        llm_model="openai:test-model",
+        openai_api_key=None,
+        openrouter_api_key=None,
+        llm_max_retries=0,
+        llm_timeout_seconds=1,
+    )
 
 
 @pytest.mark.asyncio
@@ -198,7 +206,13 @@ def test_adapter_helpers_and_injected_factory_cover_compatibility_paths() -> Non
     assert summary.name == "candidate-screening-summary"
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
-        PydanticAIModelFactory().create(Settings(openai_api_key=None))
+        PydanticAIModelFactory().create(
+            Settings(
+                llm_model="openai:test-model",
+                openai_api_key=None,
+                openrouter_api_key=None,
+            )
+        )
 
 
 def test_model_factory_builds_openai_and_openrouter_models() -> None:
@@ -208,6 +222,9 @@ def test_model_factory_builds_openai_and_openrouter_models() -> None:
     openrouter_settings = Settings(
         llm_model="openrouter:deepseek/deepseek-v4-flash:free",
         openrouter_api_key=SecretStr("test-openrouter"),
+        openrouter_data_collection="deny",
+        openrouter_zdr=True,
+        openrouter_require_parameters=False,
     )
     openrouter = PydanticAIModelFactory().create(openrouter_settings)
 
@@ -220,7 +237,7 @@ def test_model_factory_builds_openai_and_openrouter_models() -> None:
     model_settings = cast(OpenRouterModelSettings, _model_settings(openrouter_settings))
     assert model_settings.get("openrouter_provider") == {
         "allow_fallbacks": False,
-        "require_parameters": True,
+        "require_parameters": False,
         "data_collection": "deny",
         "zdr": True,
     }
@@ -290,7 +307,14 @@ async def test_summary_model_http_error_is_normalized() -> None:
 async def test_interpreter_rejects_empty_and_oversized_input_before_model_call() -> None:
     model = TestModel(custom_output_args={"intent": "answer"})
     interpreter = PydanticAIInterpreter(
-        Settings(llm_max_retries=0, max_input_characters=100), model=model
+        Settings(
+            llm_model="openai:test-model",
+            openai_api_key=None,
+            openrouter_api_key=None,
+            llm_max_retries=0,
+            max_input_characters=100,
+        ),
+        model=model,
     )
 
     with pytest.raises(ValueError, match="cannot be empty"):

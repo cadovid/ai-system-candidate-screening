@@ -49,9 +49,32 @@ def test_only_selected_provider_key_is_required() -> None:
 @pytest.mark.parametrize("model", ["missing-colon", "openai:", "unknown:model"])
 def test_invalid_model_selection_is_rejected(model: str) -> None:
     with pytest.raises(ValidationError):
-        Settings(llm_model=model)
+        Settings.model_validate(
+            {
+                "llm_model": model,
+                "openai_api_key": None,
+                "openrouter_api_key": None,
+            }
+        )
 
 
 def test_invalid_openrouter_data_collection_policy_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        Settings.model_validate({"openrouter_data_collection": "sometimes"})
+        Settings.model_validate(
+            {
+                "llm_model": "openai:test-model",
+                "openai_api_key": None,
+                "openrouter_api_key": None,
+                "openrouter_data_collection": "sometimes",
+            }
+        )
+
+
+def test_openrouter_parameter_filter_is_configurable() -> None:
+    settings = Settings(
+        llm_model="openrouter:openrouter/free",
+        openrouter_api_key=SecretStr("openrouter-secret"),
+        openrouter_require_parameters=True,
+    )
+
+    assert settings.openrouter_require_parameters is True

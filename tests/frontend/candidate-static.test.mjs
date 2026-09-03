@@ -22,3 +22,13 @@ test("voice drafts use the existing turn API and do not persist audio", async ()
   assert.doesNotMatch(candidate, /MediaRecorder/);
   assert.doesNotMatch(candidate, /\/audio/);
 });
+
+test("successful in-progress turns are not treated as terminal conversations", async () => {
+  const candidate = await readFile(new URL("static/candidate.mjs", root), "utf8");
+  assert.match(candidate, /Only the[\s\S]*screening status determines whether the conversation should be locked/);
+  assert.doesNotMatch(candidate, /data\.status === "completed"/);
+  assert.match(
+    candidate,
+    /\["qualified", "disqualified", "needs_review", "abandoned"\]\.includes\(data\.screening_status\)/,
+  );
+});

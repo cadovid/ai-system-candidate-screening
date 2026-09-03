@@ -76,6 +76,7 @@ async def test_ambiguous_location_continues_then_replays_terminal_handoff(
             TurnInterpretation(full_name=ExtractedValue(value="Ana", provided=True)),
             TurnInterpretation(location=ExtractedLocation(raw_value="Madrid", provided=True)),
             TurnInterpretation(location=ExtractedLocation(raw_value="Madrid", provided=True)),
+            TurnInterpretation(location=ExtractedLocation(raw_value="Madrid", provided=True)),
         ]
     )
     coordinator = build(interpreter)
@@ -86,19 +87,22 @@ async def test_ambiguous_location_continues_then_replays_terminal_handoff(
     assert clarification.screening_status is ScreeningStatus.IN_PROGRESS
     assert clarification.next_field == "location"
 
-    handoff = await coordinator.process_turn(created.conversation_id, "Madrid", "area-2")
+    retry = await coordinator.process_turn(created.conversation_id, "Madrid", "area-2")
+    assert retry.screening_status is ScreeningStatus.IN_PROGRESS
+
+    handoff = await coordinator.process_turn(created.conversation_id, "Madrid", "area-3")
     assert handoff.screening_status is ScreeningStatus.NEEDS_REVIEW
     assert handoff.decision is not None
     assert handoff.decision.reason_codes == ["retry_limit"]
-    assert interpreter.calls == 3
+    assert interpreter.calls == 4
 
-    replay = await coordinator.process_turn(created.conversation_id, "Madrid", "area-2")
+    replay = await coordinator.process_turn(created.conversation_id, "Madrid", "area-3")
     assert replay.idempotent is True
     assert replay.screening_status is ScreeningStatus.NEEDS_REVIEW
-    assert interpreter.calls == 3
+    assert interpreter.calls == 4
 
     with pytest.raises(CoordinatorError, match="closed"):
-        await coordinator.process_turn(created.conversation_id, "another", "area-3")
+        await coordinator.process_turn(created.conversation_id, "another", "area-4")
 
 
 @pytest.mark.asyncio
@@ -152,6 +156,41 @@ async def test_single_fuzzy_suggestion_stays_pending_until_confirmation(
     assert view.state.pending_confirmation is None
     assert view.state.location.confirmed is True
     assert view.state.location.service_area_id == "es-mad-centro"
+
+
+@pytest.mark.asyncio
+async def test_known_city_confirmation_is_persisted_as_explicit_area_scope(
+    coordinator_factory: tuple[async_sessionmaker[AsyncSession], CoordinatorBuilder],
+) -> None:
+    _, build = coordinator_factory
+    interpreter = QueueInterpreter(
+        [
+            TurnInterpretation(
+                location=ExtractedLocation(raw_value="Madrid", provided=True, evidence="Madrid")
+            ),
+            # The coordinator recovers an exact yes/no answer when a provider
+            # returns a valid interpretation but omits the confirmation flag.
+            TurnInterpretation(),
+        ]
+    )
+    coordinator = build(interpreter)
+    created = await coordinator.create_conversation(language=Language.EN)
+
+    offer = await coordinator.process_turn(created.conversation_id, "Madrid", "city")
+    assert offer.screening_status is ScreeningStatus.IN_PROGRESS
+    assert "Centro" in offer.assistant_message
+    assert "Salamanca" in offer.assistant_message
+
+    accepted = await coordinator.process_turn(created.conversation_id, "yes", "city-yes")
+    assert accepted.screening_status is ScreeningStatus.IN_PROGRESS
+    view = await coordinator.get_conversation(created.conversation_id)
+    assert view.state.location.match_status.value == "exact"
+    assert view.state.location.confirmed is True
+    assert view.state.location.service_area_ids == [
+        "es-mad-centro",
+        "es-mad-salamanca",
+    ]
+    assert view.state.pending_confirmation is None
 
 
 @pytest.mark.asyncio

@@ -30,13 +30,15 @@ def _missing_fields(state: ScreeningState) -> list[ScreeningField]:
     if state.drivers_license is None:
         missing.append(ScreeningField.DRIVERS_LICENSE)
     # A location is eligible only when the deterministic matcher identified a
-    # concrete catalogue entry and the candidate confirmed it. ``EXACT`` by
-    # itself is not enough: callers must not be able to manufacture a status
-    # with a missing service-area identifier.
+    # concrete catalogue entry (or an explicitly confirmed set of configured
+    # areas for a city) and the candidate confirmed it. ``EXACT`` by itself is
+    # not enough: callers must not be able to manufacture a status with no
+    # service-area identifier.
+    has_service_area = bool(state.location.service_area_id or state.location.service_area_ids)
     if (
         state.location.match_status is not LocationMatchStatus.EXACT
         or not state.location.confirmed
-        or not state.location.service_area_id
+        or not has_service_area
     ):
         missing.append(ScreeningField.LOCATION)
     if state.availability is None or not state.availability.value:
@@ -66,6 +68,8 @@ def evaluate_screening(
         "drivers_license_required": True,
         "location_status": state.location.match_status.value,
         "location_confirmed": state.location.confirmed,
+        "location_service_area_id": state.location.service_area_id,
+        "location_service_area_ids": list(state.location.service_area_ids),
         "required_fields_complete": not missing,
         "candidate_confirmed": state.candidate_confirmed,
         "pending_confirmation": state.pending_confirmation is not None,
@@ -117,12 +121,25 @@ def evaluate_screening(
             )
 
     if state.pending_confirmation is not None:
+        pending_reason = state.pending_confirmation.reason
+        reason_codes = (
+            [ReviewReason.AMBIGUOUS_LOCATION.value]
+            if pending_reason == "service_area_city"
+            else ["awaiting_confirmation"]
+        )
         return ScreeningDecision(
             status=ScreeningStatus.IN_PROGRESS,
-            reason_codes=["awaiting_confirmation"],
+            reason_codes=reason_codes,
             missing_fields=missing,
             ruleset_version=ruleset_version,
-            rule_trace={**trace, "decision_rule": "pending_confirmation"},
+            rule_trace={
+                **trace,
+                "decision_rule": (
+                    "city_service_area_confirmation"
+                    if pending_reason == "service_area_city"
+                    else "pending_confirmation"
+                ),
+            },
         )
 
     if missing:

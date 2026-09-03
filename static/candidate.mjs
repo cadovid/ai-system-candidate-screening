@@ -169,8 +169,10 @@ function setTerminal(nextTerminal, optedOut = false) {
 }
 
 function isTerminal(data) {
-  return data && (data.status === "completed" || data.status === "opted_out" ||
-    ["qualified", "disqualified", "needs_review", "abandoned"].includes(data.screening_status));
+  // CandidateTurnResponse.status is the status of this individual turn and
+  // is normally "completed" after every successful request. Only the
+  // screening status determines whether the conversation should be locked.
+  return data && ["qualified", "disqualified", "needs_review", "abandoned"].includes(data.screening_status);
 }
 
 async function start() {

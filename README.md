@@ -20,7 +20,7 @@ The current flow collects only these job-related fields:
 - delivery experience in years and optional platforms; and
 - possible start date or period.
 
-`qualified` means that all of those explicit fields are present, the licence answer is yes, the location is a confirmed entry in the configured catalogue, and the candidate confirms the collected information. It does not mean “hired”, “ranked”, or “recommended”. A recruiter reviews terminal and uncertain cases.
+`qualified` means that all of those explicit fields are present, the licence answer is yes, the location is either a confirmed catalogue entry or an explicitly confirmed set of configured areas for a known city, and the candidate confirms the collected information. It does not mean “hired”, “ranked”, or “recommended”. A recruiter reviews terminal and uncertain cases.
 
 ## Demo in one minute
 
@@ -110,7 +110,7 @@ The request path is deliberately transactional around state, but not around prov
 | Language detection and Spanish/English wording | LLM plus deterministic message templates | The LLM proposes `detected_language`, confidence, and intent. An explicit language switch may update session wording. |
 | Extracting facts from natural language | LLM | Returns typed patches with bounded evidence, confidence, ambiguity, and correction flags. Only the latest message is evidence. |
 | FAQ retrieval | Python | Accent-insensitive token/phrase matching over `data/faq/faq.json`; no free-form answer generation. |
-| Location resolution | Python | Exact/alias matches are accepted; fuzzy suggestions require confirmation; ambiguous or unsupported text never selects an area. |
+| Location resolution | Python | Exact/alias matches (including configured Spanish/English variants) are accepted; a short zone phrase may use a compatible structured city hint; contradictory raw text cannot be overridden; fuzzy suggestions require confirmation; a known city without a zone lists its configured areas and requires an explicit yes/no; unsupported text never selects an area. |
 | Eligibility and terminal status | Python | `ScreeningEngine` evaluates only canonical `ScreeningState`; model output cannot set a status. |
 | Corrections and confirmations | Python | `pending_confirmation` protects trusted values until the candidate says yes/no. |
 | Safety and privacy | Python | Regex guardrails redact common email/phone/card/credential-like content and block prompt injection or sensitive-data messages before model work. |
@@ -126,7 +126,7 @@ The persisted canonical state is language-independent. The seven fields are proc
 
 The screening status values are:
 
-- `in_progress`: required information is missing, a location needs clarification, or a value is awaiting confirmation;
+- `in_progress`: required information is missing, a location needs clarification (including the explicit known-city area offer), or a value is awaiting confirmation;
 - `qualified`: every explicit criterion is satisfied and the candidate confirmed the review;
 - `disqualified`: the candidate explicitly lacks a valid licence or is outside the configured service areas;
 - `needs_review`: the bounded clarification or turn limit needs a human; and
@@ -197,6 +197,7 @@ Copying `.env.example` supplies the main demo settings. Defaults below are loade
 | `OPENROUTER_API_KEY` | unset | Required only when an `openrouter:*` model is selected. The key is issued by OpenRouter. |
 | `OPENROUTER_DATA_COLLECTION` | `deny` | Exclude downstream routes that declare non-transient data collection. This conservative setting can make a free route unavailable. |
 | `OPENROUTER_ZDR` | `true` | Prefer zero-data-retention downstream routes. This may reduce availability. |
+| `OPENROUTER_REQUIRE_PARAMETERS` | `false` | Pass `true` only after verifying that the selected route supports every structured-tool parameter; `false` lets OpenRouter filter compatible free endpoints while Pydantic validates the returned schema. |
 | `LLM_BASE_URL` | unset | Optional OpenAI-compatible base URL. |
 | `LLM_TIMEOUT_SECONDS` | `15` | Provider timeout (1–120). |
 | `LLM_MAX_RETRIES` | `2` | Pydantic AI retry budget (0–5). |
@@ -228,9 +229,12 @@ LLM_MODEL=openrouter:deepseek/deepseek-v4-flash:free
 OPENROUTER_API_KEY=...
 OPENROUTER_DATA_COLLECTION=deny
 OPENROUTER_ZDR=true
+# For the currently available zero-cost router instead:
+# LLM_MODEL=openrouter:openrouter/free
+# OPENROUTER_REQUIRE_PARAMETERS=false
 ```
 
-Only the key for the selected provider is required. OpenRouter routing is deliberately configured with no model fallback and with required request parameters, so a failed free route returns a safe retryable response instead of silently using a paid model. The exact DeepSeek free slug is configurable and must be verified against OpenRouter's current availability before a live demo: free models have shared rate limits and may be temporarily unavailable. At the time of this implementation, OpenRouter's public endpoint record for this exact free slug reported no active endpoints, so an OpenRouter live smoke test may correctly fail with a safe provider-unavailable response until capacity is restored. The current model record is documented at [OpenRouter's DeepSeek V4 Flash page](https://openrouter.ai/deepseek/deepseek-v4-flash:free); downstream provider retention and data-use policies still require review before sending real candidate data.
+Only the key for the selected provider is required. OpenRouter routing is deliberately configured with no model fallback, so a failed free route returns a safe retryable response instead of silently using a paid model. `OPENROUTER_REQUIRE_PARAMETERS=false` is the practical default for the free router: its provider catalog changes and strict parameter filtering can otherwise return `404 No endpoints found that can handle the requested parameters` even when the router has compatible free models. Pydantic AI still validates the structured output and the application still owns deterministic qualification. The requested DeepSeek free slug is configurable but must be verified against OpenRouter's current availability before a live demo; the current model catalog may expose the paid DeepSeek model without its `:free` variant. For a zero-cost demo when that specific slug is absent, use `openrouter:openrouter/free`, which selects an available free model and can vary model-to-model. Free routes remain rate-limited and may be temporarily unavailable; downstream provider retention and data-use policies still require review before sending real candidate data.
 
 ## HTTP API quickstart
 

@@ -1,12 +1,12 @@
 [
-  {"id": "es-mad-centro", "country": "ES", "city": "Madrid", "zone": "Centro", "aliases": ["Madrid centro", "Madrid central"], "timezone": "Europe/Madrid"},
-  {"id": "es-mad-salamanca", "country": "ES", "city": "Madrid", "zone": "Salamanca", "aliases": ["Barrio de Salamanca"], "timezone": "Europe/Madrid"},
+  {"id": "es-mad-centro", "country": "ES", "city": "Madrid", "zone": "Centro", "aliases": ["Madrid centro", "Madrid central", "Madrid center", "Madrid centre", "Madrid city center", "Madrid city centre", "city center of Madrid", "city centre of Madrid", "The city center of Madrid", "The city centre of Madrid", "downtown Madrid"], "timezone": "Europe/Madrid"},
+  {"id": "es-mad-salamanca", "country": "ES", "city": "Madrid", "zone": "Salamanca", "aliases": ["Barrio de Salamanca", "Salamanca district Madrid", "Madrid Salamanca"], "timezone": "Europe/Madrid"},
   {"id": "es-bcn-eixample", "country": "ES", "city": "Barcelona", "zone": "Eixample", "aliases": ["Ensanche Barcelona"], "timezone": "Europe/Madrid"},
-  {"id": "es-val-ciutat", "country": "ES", "city": "Valencia", "zone": "Ciutat Vella", "aliases": ["Valencia centro"], "timezone": "Europe/Madrid"},
-  {"id": "es-sev-centro", "country": "ES", "city": "Sevilla", "zone": "Casco Antiguo", "aliases": ["Sevilla centro", "Seville center"], "timezone": "Europe/Madrid"},
-  {"id": "es-mal-centro", "country": "ES", "city": "Málaga", "zone": "Centro", "aliases": ["Malaga centro"], "timezone": "Europe/Madrid"},
-  {"id": "mx-cdmx-roma", "country": "MX", "city": "Ciudad de México", "zone": "Roma-Condesa", "aliases": ["CDMX Roma", "Roma Condesa"], "timezone": "America/Mexico_City"},
-  {"id": "mx-cdmx-polanco", "country": "MX", "city": "Ciudad de México", "zone": "Polanco", "aliases": ["CDMX Polanco"], "timezone": "America/Mexico_City"},
-  {"id": "mx-gdl-centro", "country": "MX", "city": "Guadalajara", "zone": "Centro", "aliases": ["Guadalajara centro"], "timezone": "America/Mexico_City"},
-  {"id": "mx-mty-centro", "country": "MX", "city": "Monterrey", "zone": "Centro", "aliases": ["Monterrey centro"], "timezone": "America/Monterrey"}
+  {"id": "es-val-ciutat", "country": "ES", "city": "Valencia", "zone": "Ciutat Vella", "aliases": ["Valencia centro", "Valencia city center", "Valencia city centre", "Valencia center", "Valencia centre", "city center of Valencia", "city centre of Valencia", "The city center of Valencia", "The city centre of Valencia", "downtown Valencia"], "timezone": "Europe/Madrid"},
+  {"id": "es-sev-centro", "country": "ES", "city": "Sevilla", "city_aliases": ["Seville"], "zone": "Casco Antiguo", "aliases": ["Sevilla centro", "Seville center", "Seville city center", "Seville city centre", "city center of Seville", "city centre of Seville", "The city center of Seville", "The city centre of Seville", "downtown Seville"], "timezone": "Europe/Madrid"},
+  {"id": "es-mal-centro", "country": "ES", "city": "Málaga", "zone": "Centro", "aliases": ["Malaga centro", "Malaga city center", "Malaga city centre", "Malaga center", "Malaga centre", "city center of Malaga", "city centre of Malaga", "The city center of Malaga", "The city centre of Malaga", "downtown Malaga"], "timezone": "Europe/Madrid"},
+  {"id": "mx-cdmx-roma", "country": "MX", "city": "Ciudad de México", "city_aliases": ["Mexico City", "CDMX"], "zone": "Roma-Condesa", "aliases": ["CDMX Roma", "Roma Condesa", "Mexico City Roma", "Mexico City Roma Condesa"], "timezone": "America/Mexico_City"},
+  {"id": "mx-cdmx-polanco", "country": "MX", "city": "Ciudad de México", "city_aliases": ["Mexico City", "CDMX"], "zone": "Polanco", "aliases": ["CDMX Polanco", "Mexico City Polanco"], "timezone": "America/Mexico_City"},
+  {"id": "mx-gdl-centro", "country": "MX", "city": "Guadalajara", "zone": "Centro", "aliases": ["Guadalajara centro", "Guadalajara city center", "Guadalajara city centre", "city center of Guadalajara", "city centre of Guadalajara", "downtown Guadalajara"], "timezone": "America/Mexico_City"},
+  {"id": "mx-mty-centro", "country": "MX", "city": "Monterrey", "zone": "Centro", "aliases": ["Monterrey centro", "Monterrey city center", "Monterrey city centre", "city center of Monterrey", "city centre of Monterrey", "downtown Monterrey"], "timezone": "America/Monterrey"}
 ]

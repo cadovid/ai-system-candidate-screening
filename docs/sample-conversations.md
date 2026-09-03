@@ -167,14 +167,25 @@ Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de 
 
 The matcher normalizes case, accents, punctuation, and whitespace, then accepts the unique catalogue entry `es-mad-centro`. `confirmed` is true because it is an exact/alias match.
 
+The same deterministic path handles the common English wording:
+
+```text
+Candidate: The city center of Madrid
+Assistant: Are you looking for full-time, part-time, or weekend work?
+```
+
+`The city center of Madrid`, `Madrid center`, and `Madrid city centre` are configured aliases for `Madrid — Centro`; they are not accepted because an LLM guessed their meaning.
+
 Ambiguous city:
 
 ```text
 Candidate: Madrid
-Assistant: ¿Puedes indicar la ciudad y la zona de servicio con más precisión?
+Assistant: He entendido Madrid. Las zonas de reparto configuradas en Madrid son: Centro, Salamanca. ¿Puedes repartir en alguna de estas zonas? Responde sí o no.
+Candidate: Sí
+Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de semana?
 ```
 
-Both Madrid Centro and Salamanca are configured, so the matcher returns `ambiguous` with suggestions. It never selects one. The screening decision remains `in_progress` with `reason_codes: ["ambiguous_location"]` while clarification attempts remain; after the configured bound, it becomes `needs_review` with `reason_codes: ["retry_limit"]`.
+Both Madrid Centro and Salamanca are configured, so the matcher returns a city-level `ambiguous` result with both suggestions. It never selects one silently. The screening decision remains `in_progress` with `reason_codes: ["ambiguous_location"]` while the candidate answers the explicit city-area offer. A positive answer stores both configured area IDs as an accepted city scope; a negative answer yields deterministic `disqualified` with `outside_service_area`. If the candidate names a concrete offered zone instead, that exact zone is accepted.
 
 Fuzzy single suggestion:
 
@@ -190,7 +201,7 @@ Unsupported area:
 
 ```text
 Candidate: Bilbao
-Assistant: Gracias por tu tiempo. Actualmente este puesto está limitado a las zonas de servicio configuradas, así que no podemos continuar con esta evaluación.
+Assistant: Gracias por tu tiempo. He interpretado tu zona de reparto como «Bilbao». No está entre las zonas de servicio configuradas, así que no podemos continuar con esta evaluación.
 ```
 
 Outcome: `disqualified`, `reason_codes: ["outside_service_area"]`, `conversation_status: completed`. This is a statement about the fictional configured catalogue only.

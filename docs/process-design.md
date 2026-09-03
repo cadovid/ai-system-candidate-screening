@@ -46,7 +46,7 @@ A single natural-language answer may provide several fields. The assistant asks 
 
 ## Stage 5 — resolve location and questions
 
-Locations are matched by the deterministic, data-driven catalogue. Normalisation removes case/accents, punctuation, and excess whitespace. A unique exact name or alias is accepted. A single fuzzy suggestion is held for explicit candidate confirmation. Several matches remain `ambiguous`; no suggestion is selected. A value with no acceptable suggestion is `unsupported`. The matcher returns IDs and evidence that can be audited, rather than allowing a model to invent coverage.
+Locations are matched by the deterministic, data-driven catalogue. Normalisation removes case/accents, punctuation, and excess whitespace. A unique exact name or configured alias is accepted, including common Spanish/English forms such as `Madrid centro`, `Madrid center`, and `The city center of Madrid`. A model may provide city/zone hints, but Python remains authoritative: a shortened zone phrase such as `city center` is accepted with a known `city=Madrid` only when it is compatible with a configured Madrid alias, and contradictory raw text cannot be overridden by a model hint. A single fuzzy suggestion is held for explicit candidate confirmation. Several matches remain `ambiguous`; no suggestion is selected. A known city without a safely identified zone is a deliberate city-level offer: the assistant lists every configured zone for that city and asks whether the candidate can deliver in any of them. A positive answer stores the explicitly confirmed set of configured area IDs; a negative answer is deterministically outside the service area. A value with no recognized city or acceptable suggestion is `unsupported`. The matcher returns IDs and evidence that can be audited, rather than allowing a model to invent coverage.
 
 Candidate questions are handled without widening the knowledge boundary. `FAQCatalog` performs accent-insensitive token/phrase matching across the bilingual fictional FAQ and returns the configured answer in the active language, then resumes the screening prompt. Unsupported questions receive an honest bounded response that a recruiter can follow up; there is no embeddings, vector database, web search, or open-ended RAG answer in this demo. Off-topic requests do not add facts.
 
@@ -55,8 +55,9 @@ Candidate questions are handled without widening the knowledge boundary. `FAQCat
 `ScreeningEngine` evaluates the reconciled `ScreeningState` in stable order:
 
 - An explicit `drivers_license=false` yields `disqualified` with `no_drivers_license`.
-- An `unsupported` location yields `disqualified` with `outside_service_area`.
-- An ambiguous location remains `in_progress` with `ambiguous_location` while clarification is available; a single fuzzy suggestion is held as `pending_confirmation` and remains `in_progress` until the candidate confirms or rejects it.
+- An `unsupported` location yields `disqualified` with `outside_service_area`; the response echoes the exact interpreted location. If a known city was supplied, it also names that city's configured zones.
+- A known city without a zone remains `in_progress` with `ambiguous_location` and a `service_area_city` confirmation. A positive answer accepts the configured city-area set; a negative answer yields `disqualified` with `outside_service_area`.
+- Other ambiguous locations remain `in_progress` with `ambiguous_location` while clarification is available; a single fuzzy suggestion is held as `pending_confirmation` and remains `in_progress` until the candidate confirms or rejects it.
 - A pending correction or any other missing field yields `in_progress` with an explanatory reason.
 - After two configured clarification attempts for the same issue, the controller yields `needs_review` with `retry_limit` and retains trusted values.
 - When all required fields are present but final confirmation is not true, the result is `in_progress` with `awaiting_candidate_confirmation`.
