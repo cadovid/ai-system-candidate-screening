@@ -28,15 +28,24 @@
     <form id="chat-form" class="composer">
       <label class="sr-only" for="message" data-i18n="message_label">Your message</label>
       <textarea id="message" rows="2" maxlength="2000" data-i18n-placeholder="message_placeholder" placeholder="Escribe tu respuesta…" required></textarea>
+      <button type="button" id="microphone" class="voice-button" aria-pressed="false" aria-busy="false" data-i18n="speak">Hablar</button>
       <button type="submit" id="send" data-i18n="send">Enviar</button>
     </form>
+    <p id="interim-transcript" class="interim-transcript" aria-live="polite" hidden></p>
+    <div class="voice-actions">
+      <button id="stop-listening" class="secondary" type="button" data-i18n="stop_listening" hidden>Terminar</button>
+      <button id="cancel-listening" class="secondary" type="button" data-i18n="cancel_listening" hidden>Cancelar</button>
+      <label class="read-aloud"><input id="read-aloud" type="checkbox"> <span data-i18n="read_aloud">Leer respuestas en voz alta</span></label>
+      <button id="stop-audio" class="secondary" type="button" data-i18n="stop_audio" hidden>Parar audio</button>
+    </div>
     <div class="actions">
       <button id="new-chat" class="secondary" type="button" data-i18n="new_chat">Empezar de nuevo</button>
       <button id="stop-chat" class="secondary" type="button" data-i18n="stop_chat">Parar / salir</button>
       <span id="status" role="status"></span>
     </div>
     <p class="fineprint" data-i18n="fineprint">A recruiter reviews screening information. The assistant does not make a subjective hiring decision.</p>
+    <p class="fineprint" data-i18n="voice_privacy">El reconocimiento de voz puede ser procesado por el proveedor de tu navegador. Esta aplicación no recibe ni almacena el audio. Revisa la transcripción antes de enviarla.</p>
   </main>
-  <script src="/static/candidate.js" defer></script>
+  <script type="module" src="/static/candidate.mjs"></script>
 </body>
 </html>

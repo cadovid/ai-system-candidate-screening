@@ -66,21 +66,14 @@ async def candidate_turn(
         raise CoordinatorError(
             "missing_idempotency_key", "Idempotency-Key is required", status_code=422
         )
-    if payload.language is None:
-        result = await coordinator.process_turn(
-            conversation_id,
-            payload.message,
-            key,
-            correlation_id=correlation_id(request),
-        )
-    else:
-        result = await coordinator.process_turn(
-            conversation_id,
-            payload.message,
-            key,
-            correlation_id=correlation_id(request),
-            language=payload.language,
-        )
+    result = await coordinator.process_turn(
+        conversation_id,
+        payload.message,
+        key,
+        correlation_id=correlation_id(request),
+        language=payload.language,
+        input_mode=payload.input_mode,
+    )
     response = turn_response(result)
     if result.status is TurnStatus.FAILED:
         return JSONResponse(

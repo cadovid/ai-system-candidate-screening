@@ -25,6 +25,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from candidate_screening.ai.history import HistoryMessage, build_bounded_history
 from candidate_screening.ai.interpreter import (
+    AIProviderError,
     InterpreterDependencies,
     InterpreterResult,
     LanguageInterpreter,
@@ -44,6 +45,7 @@ from candidate_screening.application.conversation import (
 from candidate_screening.application.guardrails import inspect_message, summary_is_safe
 from candidate_screening.domain.enums import (
     ConversationStatus,
+    InteractionMode,
     Language,
     ScreeningField,
     ScreeningStatus,
@@ -200,6 +202,7 @@ class AnalyticsView:
         default_factory=lambda: dict[str, int]()
     )
     dropoff_stage_distribution: dict[str, int] = field(default_factory=lambda: dict[str, int]())
+    interaction_mode_distribution: dict[str, int] = field(default_factory=lambda: dict[str, int]())
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +414,7 @@ class TurnCoordinator:
         *,
         correlation_id: str | None = None,
         language: Language | None = None,
+        input_mode: InteractionMode | str = InteractionMode.TEXT,
     ) -> TurnCoordinatorResult:
         """Process a turn while keeping every model call outside a DB transaction."""
 
@@ -426,6 +430,20 @@ class TurnCoordinator:
             raise CoordinatorError(
                 "invalid_idempotency_key", "idempotency key is invalid", status_code=422
             )
+        try:
+            # HTTP callers receive this as a validated enum, but the
+            # application service is also used directly by workers and test
+            # adapters.  Normalize at this boundary so an invalid value cannot
+            # become an AttributeError while reserving a turn.
+            input_mode = (
+                input_mode
+                if isinstance(input_mode, InteractionMode)
+                else InteractionMode(input_mode)
+            )
+        except (TypeError, ValueError) as exc:
+            raise CoordinatorError(
+                "invalid_input_mode", "input mode is invalid", status_code=422
+            ) from exc
 
         lock = await self._lock_for(conversation_id)
         async with lock:
@@ -436,6 +454,7 @@ class TurnCoordinator:
                     key,
                     content,
                     guardrail.message,
+                    input_mode,
                 )
             except SQLAlchemyError as exc:
                 logger.warning(
@@ -515,6 +534,24 @@ class TurnCoordinator:
                         interpreted.interpretation,
                         now=_utc_now(),
                         message_id=f"turn:{reservation.turn_id}",
+                    )
+                except AIProviderError as exc:
+                    logger.warning(
+                        "turn interpretation provider failure",
+                        extra={
+                            "conversation_id": conversation_id,
+                            "provider_error_category": exc.category,
+                        },
+                    )
+                    return await self._fail_turn(
+                        reservation,
+                        error_code=(
+                            "provider_rate_limited"
+                            if exc.category == "rate_limited"
+                            else "provider_unavailable"
+                        ),
+                        message=self._temporary_message(reservation.language),
+                        latency_ms=int((time.monotonic() - started) * 1_000),
                     )
                 except Exception:
                     logger.exception(
@@ -634,6 +671,7 @@ class TurnCoordinator:
         idempotency_key: str,
         original_message: str,
         stored_message: str,
+        input_mode: InteractionMode,
     ) -> _Reservation | TurnCoordinatorResult:
         request_hash = _request_hash(original_message)
         async with self._uow() as uow:
@@ -692,6 +730,7 @@ class TurnCoordinator:
                 idempotency_key=idempotency_key,
                 request_hash=request_hash,
                 status=TurnStatus.PROCESSING.value,
+                input_mode=input_mode.value,
                 state_version_before=session.version,
                 created_at=now,
             )
@@ -712,7 +751,10 @@ class TurnCoordinator:
                     turn_id=turn.id,
                     event_type=AnalyticsEventType.TURN_STARTED,
                     stage="coordinator",
-                    event_metadata={"idempotency_key": idempotency_key},
+                    event_metadata={
+                        "idempotency_key": idempotency_key,
+                        "input_mode": input_mode.value,
+                    },
                     created_at=now,
                 )
             )
@@ -876,7 +918,10 @@ class TurnCoordinator:
                         turn_id=turn.id,
                         event_type=AnalyticsEventType.TURN_FAILED,
                         stage="coordinator",
-                        event_metadata={"error_code": "invalid_status_transition"},
+                        event_metadata={
+                            "error_code": "invalid_status_transition",
+                            "input_mode": turn.input_mode,
+                        },
                         created_at=_utc_now(),
                     )
                 )
@@ -893,6 +938,19 @@ class TurnCoordinator:
                     error_code="concurrency_conflict",
                     response_message=self._temporary_message(reservation.language),
                     latency_ms=latency_ms,
+                )
+                await uow.audit_events.add(
+                    AuditEventORM(
+                        screening_session_id=reservation.session_id,
+                        turn_id=reservation.turn_id,
+                        event_type=AnalyticsEventType.TURN_FAILED,
+                        stage="coordinator",
+                        event_metadata={
+                            "error_code": "concurrency_conflict",
+                            "input_mode": turn.input_mode,
+                        },
+                        created_at=_utc_now(),
+                    )
                 )
                 await uow.commit()
                 return TurnCoordinatorResult(
@@ -1022,6 +1080,7 @@ class TurnCoordinator:
                         "security_event": outcome.security_event,
                         "decision_status": after_status.value,
                         "faq_answered": outcome.faq_answered,
+                        "input_mode": turn.input_mode,
                     },
                     created_at=_utc_now(),
                 )
@@ -1276,9 +1335,12 @@ class TurnCoordinator:
                 AuditEventORM(
                     screening_session_id=reservation.session_id,
                     turn_id=turn.id,
-                    event_type="turn_failed",
+                    event_type=AnalyticsEventType.TURN_FAILED,
                     stage="coordinator",
-                    event_metadata={"error_code": error_code},
+                    event_metadata={
+                        "error_code": error_code,
+                        "input_mode": turn.input_mode,
+                    },
                     created_at=_utc_now(),
                 )
             )
@@ -1591,6 +1653,7 @@ class TurnCoordinator:
                     persisted_aggregate.disqualification_reason_distribution
                 ),
                 dropoff_stage_distribution=persisted_aggregate.dropoff_stage_distribution,
+                interaction_mode_distribution=(persisted_aggregate.interaction_mode_distribution),
             )
 
     async def record_review(

@@ -128,6 +128,10 @@ class TurnORM(Base):
             "status IN ('processing', 'completed', 'failed')",
             name="ck_turns_status",
         ),
+        CheckConstraint(
+            "input_mode IN ('text', 'voice')",
+            name="ck_turns_input_mode",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -140,6 +144,7 @@ class TurnORM(Base):
     # turn, which prevents accidental state corruption.
     request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="processing")
+    input_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="text")
     state_version_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
     state_version_after: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)

@@ -26,7 +26,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH="/app/src" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=8000
+    PORT=8001
 
 WORKDIR /app
 
@@ -46,11 +46,11 @@ COPY --chown=app:app docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER app
 
-EXPOSE 8000
+EXPOSE 8001
 
 # urllib.request is part of the Python standard library, so the healthcheck
 # does not require curl or another extra runtime dependency.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"PORT\", \"8000\")}/healthz', timeout=3).read()"
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"PORT\", \"8001\")}/healthz', timeout=3).read()"
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,6 +1,7 @@
 """LLM adapters and typed structured-output contracts."""
 
 from .interpreter import (
+    AIProviderError,
     InterpreterDependencies,
     InterpreterResult,
     LanguageInterpreter,
@@ -23,6 +24,7 @@ from .schemas import (
 )
 
 __all__ = [
+    "AIProviderError",
     "ExtractedDeliveryExperience",
     "ExtractedLocation",
     "ExtractedValue",

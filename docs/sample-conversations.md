@@ -60,6 +60,53 @@ Summary states are explicit rather than inferred from prose:
 
 The fallback is not a lower-confidence eligibility decision: it changes presentation only. The status, reason codes, rule trace, and handoff state remain deterministic.
 
+## Browser voice mode: Spanish spoken input with an edited transcript
+
+Voice mode uses the browser’s Web Speech APIs as a presentation/input layer. The candidate still reviews text and submits the same `/api/v1/candidate/conversations/{id}/turns` endpoint; the application does not receive or persist microphone audio.
+
+```text
+Candidate clicks Hablar.
+Browser interim display: "Ana Lopes"
+Browser final transcript in the editable textarea: "Ana Lopes"
+Candidate edits the textarea to: "Ana López"
+Candidate clicks Enviar.
+Browser request: {"message":"Ana López", "input_mode":"voice"}
+
+Assistant text in chat: ¿Tienes una licencia de conducir vigente? Responde sí o no.
+If Leer respuestas en voz alta is enabled, browser speechSynthesis reads that same Spanish text aloud.
+
+Candidate clicks Hablar and says: "Sí, licencia vigente, Madrid centro, tiempo completo, por la mañana."
+Displayed final transcript: "Sí, licencia vigente, Madrid centro, tiempo completo, por la mañana."
+Candidate reviews it and clicks Enviar; no audio is uploaded and no separate voice screening starts.
+
+Assistant text in chat: ¿Cuántos años de experiencia en reparto tienes? Si quieres, indica también las plataformas.
+Browser TTS (optional): reads the assistant text above.
+
+Candidate continues with the remaining spoken answers, reviews the final confirmation text, and says: "Sí".
+Assistant text in chat: ¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos.
+The completion message remains available as written text in the chat; the terminal state then disables further turns.
+```
+
+The resulting canonical state is the same as the typed Spanish happy path:
+
+```json
+{
+  "preferred_language": "es",
+  "full_name": "Ana López",
+  "drivers_license": true,
+  "location": {"service_area_id": "es-mad-centro", "matched_name": "Madrid — Centro", "match_status": "exact", "confirmed": true},
+  "availability": ["full_time"],
+  "preferred_schedule": "morning",
+  "delivery_experience_years": 3,
+  "start_precision": "asap",
+  "candidate_confirmed": true,
+  "screening_status": "qualified",
+  "reason_codes": ["all_explicit_criteria_met"]
+}
+```
+
+The recruiter-facing handoff is `handoff_status: "ready"`, with `summary_status` either `generated` or `fallback`. Whether the candidate typed or spoke, the canonical state, ruleset, decision, audit trail, and human-review requirement are identical; only turn provenance is recorded as `input_mode: "voice"` for voice-originated submissions.
+
 ## English happy path and language switch
 
 An English conversation follows the same fields and rules:

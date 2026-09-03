@@ -133,6 +133,7 @@ class PersistedAnalyticsAggregate:
         default_factory=lambda: dict[str, int]()
     )
     dropoff_stage_distribution: dict[str, int] = field(default_factory=lambda: dict[str, int]())
+    interaction_mode_distribution: dict[str, int] = field(default_factory=lambda: dict[str, int]())
 
 
 # ``abandoned`` has a ``completed_at`` timestamp in the workflow, but it is a
@@ -292,12 +293,14 @@ def aggregate_persisted_data(
 
     turn_status_by_id: dict[str, str] = {}
     completed_turns_by_session: Counter[str] = Counter()
+    interaction_mode_distribution: Counter[str] = Counter()
     for row in turn_rows:
         turn_id = _text(_row_value(row, "id"))
         conversation_id = _text(_row_value(row, "conversation_id"))
         if turn_id is None or conversation_id is None:
             continue
         status = _text(_row_value(row, "status")) or ""
+        interaction_mode_distribution[_text(_row_value(row, "input_mode")) or "text"] += 1
         turn_status_by_id[turn_id] = status
         session_id = conversation_to_session.get(conversation_id)
         if status == "completed" and session_id in completed_session_ids:
@@ -416,6 +419,7 @@ def aggregate_persisted_data(
             sorted(disqualification_reason_distribution.items())
         ),
         dropoff_stage_distribution=dict(sorted(dropoff_stage_distribution.items())),
+        interaction_mode_distribution=dict(sorted(interaction_mode_distribution.items())),
     )
 
 

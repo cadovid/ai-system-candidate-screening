@@ -4,23 +4,27 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from pydantic import SecretStr
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.messages import ModelRequest, ModelResponse, ToolCallPart, UserPromptPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from candidate_screening.ai.interpreter import InterpreterDependencies
+from candidate_screening.ai.interpreter import AIProviderError, InterpreterDependencies
 from candidate_screening.ai.pydantic_ai import (
     PydanticAIInterpreter,
     PydanticAIModelFactory,
     SummaryGenerator,
+    _model_settings,
+    _normalize_provider_error,
     _summary_output,
     _turn_interpretation,
     _usage_dict,
@@ -193,8 +197,93 @@ def test_adapter_helpers_and_injected_factory_cover_compatibility_paths() -> Non
     assert extraction.name == "candidate-screening-interpreter"
     assert summary.name == "candidate-screening-summary"
 
-    with pytest.raises(RuntimeError, match="provider:model"):
-        PydanticAIModelFactory().create(Settings(llm_model="invalid:"))
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        PydanticAIModelFactory().create(Settings(openai_api_key=None))
+
+
+def test_model_factory_builds_openai_and_openrouter_models() -> None:
+    openai = PydanticAIModelFactory().create(
+        Settings(llm_model="openai:gpt-test", openai_api_key=SecretStr("test-openai"))
+    )
+    openrouter_settings = Settings(
+        llm_model="openrouter:deepseek/deepseek-v4-flash:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+    )
+    openrouter = PydanticAIModelFactory().create(openrouter_settings)
+
+    assert isinstance(openai, OpenAIResponsesModel)
+    assert openai.model_name == "gpt-test"
+    assert isinstance(openrouter, OpenRouterModel)
+    assert openrouter.model_name == "deepseek/deepseek-v4-flash:free"
+    assert openrouter.profile.supports_tools is True
+    assert openrouter.profile.default_structured_output_mode == "tool"
+    model_settings = cast(OpenRouterModelSettings, _model_settings(openrouter_settings))
+    assert model_settings.get("openrouter_provider") == {
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+    }
+    assert "openrouter_models" not in model_settings
+    assert model_settings.get("openrouter_reasoning") == {"enabled": False}
+    assert model_settings.get("openrouter_usage") == {"include": True}
+    assert "openrouter_provider" not in _model_settings(
+        Settings(llm_model="openai:gpt-test", openai_api_key=SecretStr("test-openai"))
+    )
+
+
+@pytest.mark.asyncio
+async def test_model_http_rate_limit_is_normalized() -> None:
+    async def rate_limited(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(429, "test-model", {"message": "not exposed"})
+
+    agent = Agent(
+        FunctionModel(rate_limited),
+        output_type=TurnInterpretation,
+        deps_type=InterpreterDependencies,
+        retries=0,
+    )
+    interpreter = PydanticAIInterpreter(_settings(), agent=agent)
+
+    with pytest.raises(AIProviderError) as error:
+        await interpreter.interpret("hello", _dependencies())
+    assert error.value.category == "rate_limited"
+    assert str(error.value) == "model provider request failed"
+    assert error.value.__cause__ is None
+
+
+def test_non_http_model_api_error_is_normalized_without_provider_details() -> None:
+    error = _normalize_provider_error(
+        ModelAPIError("deepseek/deepseek-v4-flash:free", "private provider body")
+    )
+
+    assert error.category == "unavailable"
+    assert str(error) == "model provider request failed"
+    assert "deepseek" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_summary_model_http_error_is_normalized() -> None:
+    async def unavailable(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(503, "test-model", {"message": "not exposed"})
+
+    agent = Agent(
+        FunctionModel(unavailable),
+        output_type=RecruiterSummaryOutput,
+        deps_type=dict[str, Any],
+        retries=0,
+    )
+    generator = SummaryGenerator(_settings(), agent=agent)
+
+    with pytest.raises(AIProviderError) as error:
+        await generator.generate(
+            ScreeningState.empty(Language.EN),
+            ScreeningDecision(status=ScreeningStatus.QUALIFIED),
+            language=Language.EN,
+        )
+
+    assert error.value.category == "unavailable"
+    assert error.value.__cause__ is None
 
 
 @pytest.mark.asyncio

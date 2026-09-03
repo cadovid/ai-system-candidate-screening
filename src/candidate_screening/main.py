@@ -57,10 +57,17 @@ def _build_default_coordinator(app: FastAPI, settings: Settings) -> TurnCoordina
         matcher,
         faq_catalog=faq,
     )
-    if settings.openai_api_key is not None and settings.openai_api_key.get_secret_value().strip():
+    if settings.has_selected_provider_credentials():
         interpreter: Any = PydanticAIInterpreter(settings)
         summary: Any = SummaryGenerator(settings)
     else:
+        logger.warning(
+            "selected LLM provider is not configured",
+            extra={
+                "llm_provider": settings.llm_provider,
+                "required_environment_variable": settings.selected_provider_key_variable,
+            },
+        )
         interpreter = _UnavailableInterpreter()
         summary = None
     coordinator = TurnCoordinator(

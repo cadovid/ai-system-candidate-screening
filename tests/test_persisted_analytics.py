@@ -79,7 +79,12 @@ def test_persisted_analytics_aggregates_operational_rows_without_content() -> No
     ]
     turns = [
         {"id": "t-q1", "conversation_id": "c-qualified", "status": "completed"},
-        {"id": "t-q2", "conversation_id": "c-qualified", "status": "completed"},
+        {
+            "id": "t-q2",
+            "conversation_id": "c-qualified",
+            "status": "completed",
+            "input_mode": "voice",
+        },
         {"id": "t-qf", "conversation_id": "c-qualified", "status": "failed"},
         {"id": "t-d1", "conversation_id": "c-disqualified", "status": "completed"},
     ]
@@ -146,6 +151,7 @@ def test_persisted_analytics_aggregates_operational_rows_without_content() -> No
         "location": 1,
         "preferred_schedule": 1,
     }
+    assert aggregate.interaction_mode_distribution == {"text": 3, "voice": 1}
     assert "candidate email" not in repr(asdict(aggregate))
 
 
@@ -173,6 +179,7 @@ def test_persisted_analytics_handles_empty_and_malformed_exports() -> None:
     assert aggregate.language_distribution == {"unknown": 1}
     assert aggregate.clarification_retry_count == 0
     assert aggregate.dropoff_stage_distribution == {}
+    assert aggregate.interaction_mode_distribution == {}
 
 
 @pytest.mark.asyncio
@@ -282,5 +289,6 @@ async def test_coordinator_analytics_reads_the_persisted_aggregate(tmp_path: Pat
     assert analytics.clarification_retry_count == 1
     assert analytics.disqualification_reason_distribution == {"no_drivers_license": 1}
     assert analytics.dropoff_stage_distribution == {"location": 1}
+    assert analytics.interaction_mode_distribution == {"text": 1}
     assert "alice@example.test" not in repr(analytics)
     await engine.dispose()

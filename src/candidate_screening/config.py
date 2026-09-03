@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,13 @@ class Settings(BaseSettings):
     )
     llm_model: str = Field(default="openai:gpt-5.6-luna", validation_alias="LLM_MODEL")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openrouter_api_key: SecretStr | None = Field(
+        default=None, validation_alias="OPENROUTER_API_KEY"
+    )
+    openrouter_data_collection: Literal["allow", "deny"] = Field(
+        default="deny", validation_alias="OPENROUTER_DATA_COLLECTION"
+    )
+    openrouter_zdr: bool = Field(default=True, validation_alias="OPENROUTER_ZDR")
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
     llm_timeout_seconds: float = Field(
         default=15.0, ge=1.0, le=120.0, validation_alias="LLM_TIMEOUT_SECONDS"
@@ -73,10 +81,48 @@ class Settings(BaseSettings):
         value = value.strip()
         if not value or ":" not in value:
             raise ValueError("LLM_MODEL must use a provider:model form, e.g. openai:gpt-5.6-luna")
+        provider, model_name = value.split(":", 1)
+        if provider.casefold() not in {"openai", "openrouter"}:
+            raise ValueError("LLM_MODEL provider must be 'openai' or 'openrouter'")
+        if not model_name.strip():
+            raise ValueError("LLM_MODEL must include a non-empty model name")
         return value
 
+    @property
+    def llm_provider(self) -> Literal["openai", "openrouter"]:
+        """Return the validated provider component of ``LLM_MODEL``."""
+
+        provider = self.llm_model.split(":", 1)[0].casefold()
+        return "openrouter" if provider == "openrouter" else "openai"
+
+    @property
+    def llm_model_name(self) -> str:
+        """Return the model identifier without the application provider prefix."""
+
+        return self.llm_model.split(":", 1)[1].strip()
+
+    def has_selected_provider_credentials(self) -> bool:
+        """Report credential readiness without exposing either secret."""
+
+        selected = self.openai_api_key if self.llm_provider == "openai" else self.openrouter_api_key
+        return selected is not None and bool(selected.get_secret_value().strip())
+
+    @property
+    def selected_provider_key_variable(self) -> str:
+        return "OPENAI_API_KEY" if self.llm_provider == "openai" else "OPENROUTER_API_KEY"
+
+    def require_selected_provider_api_key(self) -> str:
+        """Return the selected provider key or fail without exposing its value."""
+
+        selected = self.openai_api_key if self.llm_provider == "openai" else self.openrouter_api_key
+        if selected is None or not selected.get_secret_value().strip():
+            raise RuntimeError(
+                f"{self.selected_provider_key_variable} is required for live LLM requests"
+            )
+        return selected.get_secret_value()
+
     def require_openai_api_key(self) -> str:
-        """Return the provider key or fail without exposing its value."""
+        """Backward-compatible direct OpenAI credential accessor."""
 
         if self.openai_api_key is None or not self.openai_api_key.get_secret_value().strip():
             raise RuntimeError("OPENAI_API_KEY is required for live LLM requests")

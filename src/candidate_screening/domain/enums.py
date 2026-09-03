@@ -55,6 +55,11 @@ class TurnStatus(StrEnum):
     FAILED = "failed"
 
 
+class InteractionMode(StrEnum):
+    TEXT = "text"
+    VOICE = "voice"
+
+
 class LocationMatchStatus(StrEnum):
     UNRESOLVED = "unresolved"
     EXACT = "exact"

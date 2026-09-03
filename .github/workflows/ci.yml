@@ -32,6 +32,9 @@ jobs:
       - name: Install locked development dependencies
         run: pdm install --dev --frozen-lockfile
 
+      - name: Run dependency-free browser voice tests
+        run: node --test tests/frontend/*.test.mjs
+
       - name: Check formatting
         run: pdm run ruff format --check .
 
@@ -76,7 +79,7 @@ jobs:
       - name: Smoke-test Docker image
         run: |
           set -eu
-          docker run --detach --name candidate-screening-ci --publish 18000:8000 candidate-screening:ci
+          docker run --detach --name candidate-screening-ci --publish 18001:8001 candidate-screening:ci
           cleanup() {
             docker logs candidate-screening-ci 2>&1 || true
             docker rm --force candidate-screening-ci 2>/dev/null || true
@@ -84,7 +87,7 @@ jobs:
           trap cleanup EXIT
 
           for attempt in $(seq 1 30); do
-            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18000/healthz', timeout=2).read()"; then
+            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18001/healthz', timeout=2).read()"; then
               exit 0
             fi
             sleep 1

@@ -11,7 +11,7 @@ dependencies = [
     "aiosqlite>=0.21,<1",
     "fastapi>=0.115,<1",
     "jinja2>=3.1,<4",
-    "pydantic-ai-slim[openai]>=1.45,<2",
+    "pydantic-ai-slim[openai,openrouter]>=1.45,<2",
     "pydantic-settings>=2.10,<3",
     "sqlalchemy[asyncio]>=2.0.40,<3",
     "uvicorn[standard]>=0.35,<1",
@@ -31,7 +31,7 @@ dev = [
 distribution = false
 
 [tool.pdm.scripts]
-dev = "uvicorn --app-dir src candidate_screening.main:app --reload"
+dev = "uvicorn --app-dir src candidate_screening.main:app --reload --port 8001"
 test = "pytest"
 lint = "ruff check ."
 format = "ruff format ."

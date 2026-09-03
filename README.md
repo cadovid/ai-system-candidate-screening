@@ -28,18 +28,58 @@ The browser candidate view is `/`; the recruiter view is `/recruiter`. Both are 
 
 The bundled catalogue and FAQ are fictional fixtures for demonstration. They include Madrid, Barcelona, Valencia, Sevilla, Málaga, and selected Mexico City, Guadalajara, and Monterrey areas; they are not a real employer’s coverage map, job description, pay policy, or hiring criteria. Every FAQ entry is marked `fictional_demo: true`. Replace both data files and have the criteria reviewed before any real use.
 
-Without `OPENAI_API_KEY`, the app can start, serve health checks, create conversations, and run deterministic evaluations, but a live candidate turn returns a safe temporary provider-unavailable response. That is deliberate: importing the app and exercising infrastructure must not require a provider credential.
+Without the selected provider key, the app can start, serve health checks, create conversations, and run deterministic evaluations, but a live candidate turn returns a safe temporary provider-unavailable response. That is deliberate: importing the app and exercising infrastructure must not require a provider credential. The same screening agent can use OpenAI or OpenRouter through configuration; provider selection never changes deterministic qualification rules.
+
+### Browser voice mode
+
+The candidate page offers optional browser voice input and read-aloud responses. The voice path is a convenience layer around the existing candidate chat; it is not a second screening workflow.
+
+1. Select Español or English, then click Hablar / Speak. Approve microphone access when the browser asks. The page shows an interim transcript while the browser recognises speech.
+2. Click Terminar / Finish, or wait for recognition to finish. The final transcript is placed in the normal textarea. It is an editable draft; correct names, numbers, locations, or anything else before clicking Enviar / Send. Voice input is never submitted automatically.
+3. The reviewed text is sent as the usual `POST /api/v1/candidate/conversations/{conversation_id}/turns` request with `input_mode: "voice"`. Typed text uses the same endpoint and state machine with `input_mode: "text"`; guardrails, reconciliation, rules, persistence, idempotency, and recruiter review are shared.
+4. Check Leer respuestas en voz alta / Read replies aloud if you want the browser `speechSynthesis` API to read returned assistant replies while screening is active. Stop audio / Parar audio cancels playback. The written assistant response remains the source of truth and is always shown in the chat, including the terminal message.
+5. Cancel / Cancelar abandons the current recognition attempt and keeps the chat usable. Stop / Opt out exits the screening through the same text command path. You can always continue by typing.
+
+Web Speech support varies by browser and operating system. Chromium-family browsers such as current Chrome and Edge commonly expose `SpeechRecognition` (sometimes only the `webkitSpeechRecognition` name), but availability, language quality, permission behaviour, and server-side processing are browser/vendor choices. Safari, Firefox, embedded webviews, and managed devices may not expose recognition or may behave differently. If recognition is unavailable, the microphone control is disabled and the textarea/send flow remains fully available. `speechSynthesis` voice lists also vary; the page requests an `es-ES` or `en-US` locale and uses a matching installed voice when one exists.
+
+Microphone access generally requires a secure context (`https://`) or `http://localhost`/loopback during local development, plus a browser permission. A denied permission, blocked site setting, missing microphone, browser privacy setting, network/provider problem, or unsupported API produces an actionable status and does not prevent typed input. For a local demo, open the port-8001 URL shown by the setup instructions directly rather than an insecure remote host.
+
+The language selector controls the recognition and read-aloud locale for the next interaction and the conversation’s preferred language. Short code-switches may be detected, but mixed Spanish/English speech is not guaranteed to be transcribed or interpreted correctly; select the dominant language, speak one language at a time where possible, and review the draft. The same language-independent canonical facts and deterministic rules apply in either language.
+
+The application receives the reviewed transcript text, not microphone audio, and has no audio table, media recorder, audio upload, or audio retention path. Browser speech recognition can nevertheless send audio or transcripts to a browser/vendor service, and browser/OS speech synthesis has its own processing and retention behaviour that this application cannot control or promise to keep local, EU-resident, or zero-retention. Do not dictate passwords, payment details, contact details, government IDs, or other unnecessary sensitive information. The page discloses this limitation and the normal server guardrails still inspect submitted text.
+
+Troubleshooting: if the microphone is disabled, use a supported up-to-date browser on HTTPS/localhost and check the site’s microphone permission; if no words appear, wait for “Listening”, speak clearly, then use Finish or type instead; if the language is wrong, change the selector before starting a new attempt; if read-aloud is silent, check the checkbox, device volume, installed voices, and browser autoplay/privacy settings. Provider failures leave the written conversation available for a retry.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  C[Candidate browser or channel] -->|POST conversation / turn| API[FastAPI API]
+  subgraph BROWSER[Candidate browser]
+    TEXT[Text UI: textarea + Send]
+    VOICE[Voice controls]
+    STT[Browser SpeechRecognition / STT]
+    TTS[Browser speechSynthesis / optional TTS]
+    VOICE -->|spoken input| STT
+    STT -->|interim/final transcript| TEXT
+    TEXT -->|typed or edited text + input_mode| TURN["POST /api/v1/candidate/conversations/{id}/turns"]
+    TEXT -->|new conversation| CREATE["POST /api/v1/candidate/conversations"]
+    TURN -->|assistant text| TEXT
+    TURN -->|optional assistant text| TTS
+  end
+  TURN --> API[FastAPI API]
+  CREATE --> API
   R[Recruiter browser or internal client] -->|Bearer internal key| API
   API --> MW[Correlation, body, rate and concurrency limits]
   MW --> COORD[TurnCoordinator]
   COORD --> G[Guardrails: redact and block]
   G -->|safe text only| LLM[Pydantic AI interpreter]
+  subgraph PROVIDER[Separate server-side LLM provider boundary]
+    CONFIG[LLM_MODEL + selected provider key] --> RESOLVE[Provider/model resolver]
+    RESOLVE --> OA[OpenAI Responses]
+    RESOLVE --> OR[OpenRouter / DeepSeek V4 Flash Free]
+    OA -->|typed provider response| LLM
+    OR -->|typed provider response| LLM
+  end
   LLM -->|TurnInterpretation: typed patch| REC[Reconciliation]
   REC --> CAT[Service-area matcher]
   REC --> RULES[ScreeningEngine]
@@ -110,7 +150,7 @@ The separate conversation status is `active`, `completed`, or `opted_out`. A ter
 
 ## Local setup
 
-Prerequisites: Python 3.14, [PDM](https://pdm-project.org/), and a shell. The lockfile is the source of truth for dependencies.
+Prerequisites: Python 3.14, [PDM](https://pdm-project.org/), and a shell. Node.js 18+ is only needed for the dependency-free frontend test command. The lockfile is the source of truth for Python dependencies.
 
 ```bash
 pdm install --dev --frozen-lockfile
@@ -120,12 +160,13 @@ pdm run migrate
 pdm run dev
 ```
 
-Open <http://127.0.0.1:8000/> for the candidate view, <http://127.0.0.1:8000/recruiter> for the internal view, or <http://127.0.0.1:8000/docs> for FastAPI’s generated OpenAPI UI. Set `OPENAI_API_KEY` in `.env` for live turns. Never commit `.env`, provider keys, resume tokens, or candidate data.
+Open <http://127.0.0.1:8001/> for the candidate view, <http://127.0.0.1:8001/recruiter> for the internal view, or <http://127.0.0.1:8001/docs> for FastAPI’s generated OpenAPI UI. Set the key for the provider selected by `LLM_MODEL` in `.env` for live turns. Never commit `.env`, provider keys, resume tokens, or candidate data.
 
 Useful development commands:
 
 ```bash
 pdm run test
+node --test tests/frontend/*.test.mjs
 pdm run lint
 pdm run format
 pdm run typecheck
@@ -134,6 +175,9 @@ pdm run pytest tests/test_rules_matrix.py --cov=candidate_screening.domain.rules
 pdm run pytest tests/test_transitions.py --cov=candidate_screening.domain.transitions --cov-branch --cov-report=term-missing --cov-fail-under=100
 pdm run pytest tests/test_service_areas.py --cov=candidate_screening.domain.service_areas --cov-branch --cov-report=term-missing --cov-fail-under=100
 pdm run python scripts/run_evals.py --mode deterministic
+# Optional, credentialed smoke test: uses only two bilingual cases.
+pdm run python scripts/run_evals.py --mode live --json \
+  --case-id happy_path --case-id english_happy_path
 pdm run python scripts/reengage.py --dry-run
 ```
 
@@ -148,8 +192,11 @@ Copying `.env.example` supplies the main demo settings. Defaults below are loade
 | `APP_ENV` | `development` | Environment label. |
 | `LOG_LEVEL` | `INFO` | Application logging level. |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./var/screening.db` | Async SQLAlchemy database. |
-| `LLM_MODEL` | `openai:gpt-5.6-luna` | Required `provider:model` selector. |
-| `OPENAI_API_KEY` | unset | Required only when the OpenAI provider is called. |
+| `LLM_MODEL` | `openai:gpt-5.6-luna` | Required `provider:model` selector. Use `openrouter:deepseek/deepseek-v4-flash:free` for the requested OpenRouter development route. |
+| `OPENAI_API_KEY` | unset | Required only when an `openai:*` model is selected. |
+| `OPENROUTER_API_KEY` | unset | Required only when an `openrouter:*` model is selected. The key is issued by OpenRouter. |
+| `OPENROUTER_DATA_COLLECTION` | `deny` | Exclude downstream routes that declare non-transient data collection. This conservative setting can make a free route unavailable. |
+| `OPENROUTER_ZDR` | `true` | Prefer zero-data-retention downstream routes. This may reduce availability. |
 | `LLM_BASE_URL` | unset | Optional OpenAI-compatible base URL. |
 | `LLM_TIMEOUT_SECONDS` | `15` | Provider timeout (1–120). |
 | `LLM_MAX_RETRIES` | `2` | Pydantic AI retry budget (0–5). |
@@ -167,12 +214,30 @@ Copying `.env.example` supplies the main demo settings. Defaults below are loade
 
 The in-process rate and concurrency controls are only a last line of defence for one worker. Put an edge/API gateway in front of a production deployment, and use a shared store for distributed limits.
 
+### Choosing an LLM provider
+
+`LLM_MODEL` is the single provider/model selector. The application constructs the same Pydantic AI extraction and summary agents for either provider:
+
+```dotenv
+# OpenAI (default)
+LLM_MODEL=openai:gpt-5.6-luna
+OPENAI_API_KEY=...
+
+# Or OpenRouter's requested free development route
+LLM_MODEL=openrouter:deepseek/deepseek-v4-flash:free
+OPENROUTER_API_KEY=...
+OPENROUTER_DATA_COLLECTION=deny
+OPENROUTER_ZDR=true
+```
+
+Only the key for the selected provider is required. OpenRouter routing is deliberately configured with no model fallback and with required request parameters, so a failed free route returns a safe retryable response instead of silently using a paid model. The exact DeepSeek free slug is configurable and must be verified against OpenRouter's current availability before a live demo: free models have shared rate limits and may be temporarily unavailable. At the time of this implementation, OpenRouter's public endpoint record for this exact free slug reported no active endpoints, so an OpenRouter live smoke test may correctly fail with a safe provider-unavailable response until capacity is restored. The current model record is documented at [OpenRouter's DeepSeek V4 Flash page](https://openrouter.ai/deepseek/deepseek-v4-flash:free); downstream provider retention and data-use policies still require review before sending real candidate data.
+
 ## HTTP API quickstart
 
 The canonical documented prefix is `/api/v1`. The candidate create endpoint is intentionally unauthenticated so it can issue a new opaque resume credential. All subsequent candidate reads and turns require that credential as a bearer token. Internal endpoints require the separate `INTERNAL_API_KEY`; a candidate resume token never authorizes recruiter access.
 
 ```bash
-BASE=http://127.0.0.1:8000
+BASE=http://127.0.0.1:8001
 CREATE=$(curl -sS -X POST "$BASE/api/v1/candidate/conversations" \
   -H 'Content-Type: application/json' \
   -d '{"language":"en","channel":"web"}')
@@ -229,11 +294,11 @@ This repository is an engineering demonstration, not a privacy notice, DPIA, emp
 
 ## Docker and deployment
 
-The multi-stage `Dockerfile` uses Python 3.14, installs the frozen production lockfile, copies only runtime assets, runs as non-root user `app` (UID 10001), exposes port 8000, and includes a standard-library `/healthz` healthcheck. `docker/entrypoint.sh` runs `alembic upgrade head` and starts one Uvicorn worker. For a local container:
+The multi-stage `Dockerfile` uses Python 3.14, installs the frozen production lockfile, copies only runtime assets, runs as non-root user `app` (UID 10001), exposes port 8001, and includes a standard-library `/healthz` healthcheck. `docker/entrypoint.sh` runs `alembic upgrade head` and starts one Uvicorn worker. For a local container:
 
 ```bash
 docker build --tag candidate-screening:local .
-docker run --rm --env-file .env -p 8000:8000 \
+docker run --rm --env-file .env -p 8001:8001 \
   -v "$(pwd)/var:/app/var" candidate-screening:local
 ```
 
@@ -241,7 +306,7 @@ The included `render.yaml` describes a small Render Docker web service with one 
 
 ## CI and live evaluations
 
-`.github/workflows/ci.yml` runs on pushes and pull requests: locked dev install, Ruff format check/lint, strict Pyright, pytest with coverage, migration smoke test, Docker build, and a `/healthz` container smoke test. `.github/workflows/live-evals.yml` is manual-only, allowlists `openai:gpt-5.6-luna`, requires `OPENAI_API_KEY`, and validates a caller-supplied USD approval threshold of at most 5.00. That threshold is an operator approval gate only: the workflow and evaluator do not cap provider billing, so configure a provider/project quota separately before running live mode. Live mode can incur provider cost and latency; deterministic mode is the default and should gate ordinary changes.
+`.github/workflows/ci.yml` runs on pushes and pull requests: locked dev install, Ruff format check/lint, strict Pyright, pytest with coverage, migration smoke test, Docker build, and a `/healthz` container smoke test. `.github/workflows/live-evals.yml` is manual-only and supports the explicit `openai:gpt-5.6-luna` and `openrouter:deepseek/deepseek-v4-flash:free` choices. It requires only the secret for the selected provider, runs a small bilingual smoke subset, and validates a caller-supplied USD approval threshold of at most 5.00. That threshold is an operator approval gate only: the workflow and evaluator do not cap provider billing, so configure a provider/project quota separately before running live mode. OpenRouter's free quota and route availability are volatile; the workflow never substitutes another model. Live mode can incur provider cost and latency; deterministic mode is the default and should gate ordinary changes.
 
 ## EU orientation (checked 2026-09-02)
 

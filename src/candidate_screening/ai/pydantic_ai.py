@@ -7,35 +7,71 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from pydantic_ai import Agent, RunContext, UsageLimits
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIResponsesModel
+from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 from pydantic_ai.settings import ModelSettings
 
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import Language
 from candidate_screening.domain.models import ScreeningDecision, ScreeningState
 
-from .interpreter import InterpreterDependencies, InterpreterResult, ModelFactory
+from .interpreter import AIProviderError, InterpreterDependencies, InterpreterResult, ModelFactory
 from .schemas import RecruiterSummaryOutput, TurnInterpretation
 
 
-def _provider_and_model(settings: Settings) -> tuple[Any | None, str]:
-    try:
-        provider_name, model_name = settings.llm_model.split(":", 1)
-    except ValueError as exc:
-        raise RuntimeError("LLM_MODEL must use provider:model syntax") from exc
-    provider_name = provider_name.strip()
-    model_name = model_name.strip()
-    if not provider_name or not model_name:
-        raise RuntimeError("LLM_MODEL must use provider:model syntax")
-    if provider_name.casefold() == "openai":
+def _model_settings(settings: Settings) -> ModelSettings:
+    common: ModelSettings = {
+        "max_tokens": settings.llm_max_output_tokens,
+        "timeout": settings.llm_timeout_seconds,
+    }
+    if settings.llm_provider != "openrouter":
+        return common
+    openrouter: OpenRouterModelSettings = {
+        **common,
+        "openrouter_usage": {"include": True},
+        "openrouter_reasoning": {"enabled": False},
+        "openrouter_provider": {
+            "allow_fallbacks": False,
+            "require_parameters": True,
+            "data_collection": settings.openrouter_data_collection,
+            "zdr": settings.openrouter_zdr,
+        },
+    }
+    return openrouter
+
+
+def _normalize_provider_error(exc: ModelAPIError) -> AIProviderError:
+    """Convert provider SDK failures into a safe, provider-neutral error.
+
+    ``ModelAPIError`` deliberately carries the provider/model details for
+    diagnostics.  Those details must not cross the AI/application boundary:
+    the coordinator only needs to know whether a bounded retry may be useful.
+    ``ModelHTTPError`` is the only Pydantic AI error with a status code, so
+    classify HTTP 429 separately and keep all other API failures unavailable.
+    """
+
+    category = (
+        "rate_limited"
+        if isinstance(exc, ModelHTTPError) and exc.status_code == 429
+        else "unavailable"
+    )
+    return AIProviderError(category)
+
+
+def _provider_and_model(settings: Settings) -> tuple[Any, str]:
+    model_name = settings.llm_model_name
+    api_key = settings.require_selected_provider_api_key()
+    if settings.llm_provider == "openai":
         provider = OpenAIProvider(
-            api_key=settings.require_openai_api_key(),
+            api_key=api_key,
             base_url=settings.llm_base_url,
         )
         return provider, model_name
-    return None, settings.llm_model
+    return OpenRouterProvider(api_key=api_key), model_name
 
 
 class PydanticAIModelFactory:
@@ -49,9 +85,9 @@ class PydanticAIModelFactory:
 
     def create(self, settings: Settings) -> Any:
         provider, model_name = _provider_and_model(settings)
-        if provider is not None:
+        if settings.llm_provider == "openai":
             return OpenAIResponsesModel(model_name, provider=provider)
-        return model_name
+        return OpenRouterModel(model_name, provider=provider)
 
 
 def _extraction_instructions_for(deps: InterpreterDependencies) -> str:
@@ -111,10 +147,7 @@ def build_agents(
         else:
             model_spec = PydanticAIModelFactory().create(settings)
 
-    common_settings: ModelSettings = {
-        "max_tokens": settings.llm_max_output_tokens,
-        "timeout": settings.llm_timeout_seconds,
-    }
+    common_settings = _model_settings(settings)
     extraction = Agent(
         model=model_spec,
         output_type=TurnInterpretation,
@@ -211,16 +244,21 @@ class PydanticAIInterpreter:
             raise ValueError("candidate message cannot be empty")
         if len(content) > self.settings.max_input_characters:
             raise ValueError("candidate message exceeds the configured character limit")
-        result = await self.agent.run(
-            content,
-            deps=dependencies,
-            instructions=_extraction_instructions_for(dependencies),
-            message_history=message_history,
-            usage_limits=UsageLimits(
-                request_limit=max(1, self.settings.llm_max_retries + 1),
-                output_tokens_limit=self.settings.llm_max_output_tokens,
-            ),
-        )
+        try:
+            result = await self.agent.run(
+                content,
+                deps=dependencies,
+                instructions=_extraction_instructions_for(dependencies),
+                message_history=message_history,
+                usage_limits=UsageLimits(
+                    request_limit=max(1, self.settings.llm_max_retries + 1),
+                    output_tokens_limit=self.settings.llm_max_output_tokens,
+                ),
+            )
+        except ModelAPIError as exc:
+            # Do not retain an exception chain containing provider response
+            # bodies: callers may log the normalized error safely.
+            raise _normalize_provider_error(exc) from None
         output = _turn_interpretation(result.output)
         response = getattr(result, "response", None)
         return InterpreterResult(
@@ -260,13 +298,18 @@ class SummaryGenerator:
             "validated_screening_state": state.model_dump(mode="json"),
             "deterministic_decision": decision.model_dump(mode="json"),
         }
-        result = await self.agent.run(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-            deps=payload,
-            instructions=_summary_instructions_for(language.value),
-            usage_limits=UsageLimits(
-                request_limit=max(1, self.settings.llm_max_retries + 1),
-                output_tokens_limit=self.settings.llm_max_output_tokens,
-            ),
-        )
+        try:
+            result = await self.agent.run(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                deps=payload,
+                instructions=_summary_instructions_for(language.value),
+                usage_limits=UsageLimits(
+                    request_limit=max(1, self.settings.llm_max_retries + 1),
+                    output_tokens_limit=self.settings.llm_max_output_tokens,
+                ),
+            )
+        except ModelAPIError as exc:
+            # Do not retain an exception chain containing provider response
+            # bodies: callers may log the normalized error safely.
+            raise _normalize_provider_error(exc) from None
         return _summary_output(result.output)

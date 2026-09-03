@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic_ai.messages import ModelMessage
 
@@ -13,6 +13,14 @@ from candidate_screening.domain.enums import Language, ScreeningField
 from candidate_screening.domain.models import ScreeningDecision, ScreeningState
 
 from .schemas import RecruiterSummaryOutput, TurnInterpretation
+
+
+class AIProviderError(RuntimeError):
+    """Provider-neutral error safe for application-layer policy decisions."""
+
+    def __init__(self, category: Literal["rate_limited", "unavailable"] = "unavailable") -> None:
+        super().__init__("model provider request failed")
+        self.category = category
 
 
 @dataclass(slots=True)

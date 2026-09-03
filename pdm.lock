@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = []
 lock_version = "4.5.0"
-content_hash = "sha256:cf2579f7cef29ceac5ac3d310d1496382dd2f456b2cac6f1af9e01028fe70e4d"
+content_hash = "sha256:cdb5834b25aea48d9e54f599f3b15fed622810747498156a8fec086163ebfdc3"
 
 [[metadata.targets]]
 requires_python = ">=3.14,<3.15"
@@ -570,7 +570,7 @@ files = [
 [[package]]
 name = "pydantic-ai-slim"
 version = "1.107.5"
-extras = ["openai"]
+extras = ["openai", "openrouter"]
 summary = ""
 dependencies = [
     "openai",

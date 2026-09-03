@@ -18,6 +18,7 @@ from candidate_screening.application.coordinator import (
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import (
     ConversationStatus,
+    InteractionMode,
     Language,
     ScreeningStatus,
     TurnStatus,
@@ -29,6 +30,7 @@ from candidate_screening.main import create_app
 class FakeCoordinator:
     def __init__(self) -> None:
         self.turn_keys: list[str] = []
+        self.turn_modes: list[InteractionMode] = []
 
     async def create_conversation(self, **_: object) -> ConversationCreated:
         return ConversationCreated(
@@ -65,9 +67,12 @@ class FakeCoordinator:
         idempotency_key: str,
         *,
         correlation_id: str | None = None,
+        language: Language | None = None,
+        input_mode: InteractionMode = InteractionMode.TEXT,
     ) -> TurnCoordinatorResult:
-        _ = (message, correlation_id)
+        _ = (message, correlation_id, language)
         self.turn_keys.append(idempotency_key)
+        self.turn_modes.append(input_mode)
         return TurnCoordinatorResult(
             conversation_id=conversation_id,
             turn_id="turn-1",
@@ -143,6 +148,22 @@ async def test_candidate_routes_require_resume_token_and_idempotency() -> None:
         )
         assert turn.status_code == 200
         assert coordinator.turn_keys == ["turn-key"]
+        assert coordinator.turn_modes == [InteractionMode.TEXT]
+
+        voice_turn = await client.post(
+            "/api/v1/candidate/conversations/conversation-1/turns",
+            headers={"Authorization": "Bearer resume-1", "Idempotency-Key": "voice-key"},
+            json={"message": "Madrid centro", "input_mode": "voice"},
+        )
+        assert voice_turn.status_code == 200
+        assert coordinator.turn_modes[-1] is InteractionMode.VOICE
+
+        invalid_mode = await client.post(
+            "/api/v1/candidate/conversations/conversation-1/turns",
+            headers={"Authorization": "Bearer resume-1", "Idempotency-Key": "bad-mode"},
+            json={"message": "Madrid centro", "input_mode": "audio"},
+        )
+        assert invalid_mode.status_code == 422
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from candidate_screening.domain.enums import Language, ScreeningStatus, TurnStatus
+from candidate_screening.domain.enums import InteractionMode, Language, ScreeningStatus, TurnStatus
 
 
 class APIModel(BaseModel):
@@ -40,6 +40,8 @@ class CandidateTurnRequest(APIModel):
     # The browser language selector sends this as an explicit, auditable
     # preference change.  It is optional for existing API clients.
     language: Language | None = None
+    # Operational provenance only. It must never affect screening decisions.
+    input_mode: InteractionMode = InteractionMode.TEXT
 
     @field_validator("message", "idempotency_key")
     @classmethod
@@ -149,6 +151,7 @@ class AnalyticsResponse(APIModel):
     clarification_retry_counts: dict[str, int] = Field(default_factory=dict)
     disqualification_reason_distribution: dict[str, int] = Field(default_factory=dict)
     dropoff_stage_distribution: dict[str, int] = Field(default_factory=dict)
+    interaction_mode_distribution: dict[str, int] = Field(default_factory=dict)
 
 
 class ReviewRequest(APIModel):

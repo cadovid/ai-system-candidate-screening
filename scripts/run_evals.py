@@ -6,6 +6,9 @@ is explicit because it can incur provider cost and latency::
 
     python scripts/run_evals.py --mode deterministic
     python scripts/run_evals.py --mode live --json
+
+Live provider smoke runs can be bounded to selected fixtures with repeated
+``--case-id`` options.
 """
 
 from __future__ import annotations
@@ -42,6 +45,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scenarios", type=Path, default=DEFAULT_SCENARIOS_PATH, help="scenario JSON"
     )
+    parser.add_argument(
+        "--case-id",
+        dest="case_ids",
+        action="append",
+        help="run only this evaluation case (repeat for multiple cases)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the full report as JSON")
     parser.add_argument(
         "--fail-on-error", action="store_true", help="exit 1 when one or more cases fail"
@@ -52,6 +61,13 @@ def _parser() -> argparse.ArgumentParser:
 async def _run(args: argparse.Namespace) -> tuple[dict[str, Any], bool]:
     cases = load_eval_cases(args.evals)
     scenarios = load_scenarios(args.scenarios)
+    if args.case_ids:
+        requested = set(args.case_ids)
+        known = {case.id for case in cases}
+        missing = sorted(requested - known)
+        if missing:
+            raise ValueError(f"unknown evaluation case(s): {', '.join(missing)}")
+        cases = tuple(case for case in cases if case.id in requested)
     if args.mode == "live":
         report = await run_live(cases, scenarios, settings=Settings())
     else:

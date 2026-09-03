@@ -8,6 +8,16 @@ The assistant collects a small set of explicit, job-related facts for a delivery
 
 The model is an interpreter, not the decision-maker. Its output schema has intent, language, candidate questions, and typed fact patches with evidence/confidence. It has no status field. A model response is never accepted as proof of licence, location, eligibility, consent, or a protected attribute.
 
+The demo can route the same agent through OpenAI or OpenRouter by setting `LLM_MODEL`. The OpenRouter development configuration requests `data_collection=deny`, zero-data-retention routes, required structured parameters, and no model fallback. These settings are conservative but can make the requested free DeepSeek route unavailable. OpenRouter proxies requests to downstream providers with their own policies; the free route is not claimed to provide EU residency, a data-processing agreement, or suitability for real candidate data. Review the current [OpenRouter privacy documentation](https://openrouter.ai/docs/guides/privacy/provider-logging) and downstream provider terms before any non-synthetic use.
+
+## Browser voice privacy limitations
+
+The candidate page’s voice controls are an optional browser capability, not a private on-device recording system. Browser implementations of `SpeechRecognition`/`webkitSpeechRecognition` can process microphone audio and recognition data through the browser vendor or another service selected by that implementation. This application cannot guarantee local-only processing, EU residency, zero retention, or a particular vendor’s terms. Browser extensions, operating-system speech services, enterprise policies, and future browser changes can also alter the data path.
+
+The application sends only the candidate’s reviewed transcript text to the existing candidate turn endpoint. It does not use `MediaRecorder`, upload audio, create an audio table, or retain microphone recordings. Optional `speechSynthesis` speaks the assistant’s already-returned text in the browser; the browser/operating system may apply its own processing and retention rules, which are outside this repository’s control. “No audio stored by this application” therefore does not mean “no voice data leaves the device.”
+
+The UI discloses these limits, asks candidates to review and edit the transcript, and keeps typing available when recognition is unsupported or permission is denied. Microphone access generally requires HTTPS or localhost/loopback and an explicit browser permission. A production deployment must provide an accessible, jurisdiction-specific voice notice and consent/alternative-input path; document the browser/provider data flows; assess processor terms, retention, transfers, and deletion rights; and test the experience for candidates who cannot or do not wish to use speech. Candidates should not dictate passwords, payment details, contact details, government IDs, or other unnecessary sensitive information. Transcript guardrails still apply after submission, but they cannot inspect audio that stays in a browser/provider service and are not a complete DLP control.
+
 ## Control map
 
 | Risk | Implemented control | Observable outcome | Known limitation / next gate |

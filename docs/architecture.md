@@ -7,8 +7,17 @@ This service is a deliberately small modular monolith. The modules have clear se
 ```mermaid
 flowchart TB
   subgraph Clients
-    Candidate[Candidate web UI / channel adapter]
+    TextUI[Candidate Text UI: textarea + Send]
+    VoiceControls[Candidate Voice controls]
+    BrowserSTT[Browser SpeechRecognition / STT]
+    BrowserTTS[Browser speechSynthesis / optional TTS]
     Recruiter[Recruiter UI / internal client]
+    VoiceControls -->|spoken input| BrowserSTT
+    BrowserSTT -->|interim/final transcript| TextUI
+    TextUI -->|typed or edited text + input_mode| Turns["POST /api/v1/candidate/conversations/{id}/turns"]
+    TextUI -->|new conversation| Create["POST /api/v1/candidate/conversations"]
+    Turns -->|assistant text| TextUI
+    Turns -->|optional assistant text| BrowserTTS
   end
 
   subgraph HTTP[FastAPI application]
@@ -35,16 +44,23 @@ flowchart TB
     Transitions[allowed status transitions]
   end
 
-  subgraph AI[Optional provider adapter]
+  subgraph AI[Separate server-side LLM provider boundary]
+    Resolver[Configuration-driven model resolver]
     Interpreter[PydanticAIInterpreter]
     Summary[SummaryGenerator]
     Schemas[TurnInterpretation / RecruiterSummaryOutput]
+    OpenAI[OpenAI Responses model]
+    OpenRouter[OpenRouter / selected model]
   end
+
+  OpenAI -. server-side API .-> OpenAIAPI[(OpenAI API)]
+  OpenRouter -. server-side API .-> OpenRouterAPI[(OpenRouter API)]
 
   DB[(SQLAlchemy ORM + SQLite)]
   Data[(versioned JSON catalogue + FAQ)]
 
-  Candidate --> Middleware
+  Turns --> Middleware
+  Create --> Middleware
   Recruiter --> Middleware
   Middleware --> CandidateAPI
   Middleware --> InternalAPI
@@ -54,6 +70,12 @@ flowchart TB
   InternalAPI --> Coordinator
   Coordinator --> Guard
   Guard --> Interpreter
+  Resolver --> OpenAI
+  Resolver --> OpenRouter
+  OpenAI --> Interpreter
+  OpenRouter --> Interpreter
+  OpenAI --> Summary
+  OpenRouter --> Summary
   Interpreter --> Schemas
   Schemas --> Reconcile
   Reconcile --> Controller
@@ -69,6 +91,8 @@ flowchart TB
   State --> Rules
   Transitions --> Rules
 ```
+
+The candidate browser has one text composer and two optional voice adapters. Typed text, or a reviewed transcript produced by browser SpeechRecognition, is submitted to the same versioned `/turns` endpoint and enters the same coordinator/reconciliation/rules workflow; `input_mode` is provenance, not a different decision path. Assistant text is always rendered in the text UI, with optional browser `speechSynthesis` reading it aloud. Microphone audio is not sent to or persisted by this service. The separate server-side provider boundary is used only after guardrails, and both supported providers feed the same typed interpreter contract.
 
 ### HTTP and security boundary
 
@@ -88,6 +112,8 @@ The rule engine is pure and rerunnable. Under ruleset `2026-01`, the required fi
 
 `PydanticAIInterpreter` uses a Pydantic AI `Agent` with `TurnInterpretation` as its output type. The schema is an extraction/intent patch, not a decision schema, and rejects unknown fields. Trusted dependencies include current canonical state, pending field, active language, date, and correlation ID. Persisted history is converted to provider messages by `build_bounded_history` and limited by pair and character budgets.
 
+The model factory is the only provider-specific construction boundary. `LLM_MODEL` uses `provider:model` syntax and currently resolves either `openai:<model>` through `OpenAIResponsesModel` or `openrouter:<model>` through Pydantic AI's first-class `OpenRouterModel`/`OpenRouterProvider` ([official integration](https://pydantic.dev/docs/ai/models/openrouter/)). Both providers feed the same typed extraction and summary agents and the same coordinator. OpenRouter is configured with required request parameters, no model fallback, and conservative data-collection/ZDR routing settings; a free-route outage becomes a safe retryable turn failure rather than an unexpected paid request. Provider keys are selected lazily from `OPENAI_API_KEY` or `OPENROUTER_API_KEY`, and are never returned to the browser or written to logs.
+
 The summary agent is a separate typed agent. It receives JSON containing the validated state and deterministic decision, not the raw transcript. A summary is accepted only if it validates, is at most 1,200 characters, and passes the deterministic safety predicate. Any provider error or unsafe output uses `_summary_fallback`, which omits free-form evidence and raw start-date text. Summary generation is intentionally after the state commit; a slow model cannot keep a database transaction open or roll back a valid screening result. The canonical result starts as `summary_status=pending`; a transient derived-write failure is logged without failing the candidate turn, and an authenticated `POST /api/v1/internal/screenings/{session_id}/summary/retry` repairs the summary without re-running screening.
 
 ### Knowledge boundary
@@ -98,7 +124,8 @@ The FAQ is not an open-ended model knowledge source. `FAQCatalog` loads a small 
 
 ```mermaid
 sequenceDiagram
-  participant U as Candidate
+  participant T as Candidate Text UI
+  participant V as Browser Voice (STT/TTS)
   participant A as API/middleware
   participant C as TurnCoordinator
   participant G as Guardrails
@@ -108,7 +135,13 @@ sequenceDiagram
   participant DB as Database
   participant H as Summary agent
 
-  U->>A: POST turn + bearer + idempotency key
+  alt typed input
+    T->>A: POST same /turns endpoint + input_mode text + bearer + idempotency key
+  else browser voice input
+    V->>V: SpeechRecognition captures speech
+    V->>T: Display editable transcript
+    T->>A: POST same /turns endpoint + input_mode voice + bearer + idempotency key
+  end
   A->>C: validated message
   C->>G: inspect and minimally redact
   C->>DB: reserve turn, persist redacted user message
@@ -130,7 +163,11 @@ sequenceDiagram
     C->>DB: summary or deterministic fallback
   end
   C-->>A: CandidateTurnResponse
-  A-->>U: assistant message + status/version
+  A-->>T: assistant text + status/version
+  opt read-aloud enabled
+    T->>V: assistant text
+    V->>V: speechSynthesis reads response
+  end
 ```
 
 The unique `(conversation_id, idempotency_key)` constraint and request hash prevent a retry from becoming a second turn. Replaying a completed or failed turn returns the stored response with `idempotent: true`; using the key for a different message is a conflict. The coordinator enforces `MAX_TURNS` before any additional provider call and uses a deterministic recruiter handoff at the bound. An in-process per-conversation lock reduces duplicate work, while optimistic `screening_sessions.version` checking protects the database if another worker changes the session. A conflict is reported as a safe retryable/concurrency error rather than merging model updates.
