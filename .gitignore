@@ -11,6 +11,7 @@ htmlcov/
 .pdm-python
 *.py[cod]
 var/
+dogfood-output/
 dist/
 build/
 *.egg-info/

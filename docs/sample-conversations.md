@@ -2,7 +2,7 @@
 
 These examples are deliberately synthetic. They show the shape of the state machine and deterministic outcomes, not a promise about a real employer, job, salary, coverage map, or provider wording. The bundled fixtures live in [`data/sample_conversations.json`](../data/sample_conversations.json), [`data/scenarios/scenarios.json`](../data/scenarios/scenarios.json), and [`data/evals/eval_cases.json`](../data/evals/eval_cases.json). Provider-generated wording can vary; statuses, reason codes, and area matches come from Python.
 
-The JSON snippets below omit timestamps and evidence quotes for readability. In the database, accepted fields can retain bounded evidence and a message ID, and every turn carries a state version.
+The JSON snippets below omit timestamps and evidence quotes for readability. In the database, accepted fields can retain bounded evidence and a message ID, and every turn carries a state version. Relative periods such as “next week” are intentionally valid start-availability answers: they are stored with `precision: "week"` and no exact date, whereas genuinely vague wording remains subject to clarification.
 
 ## Spanish happy path
 

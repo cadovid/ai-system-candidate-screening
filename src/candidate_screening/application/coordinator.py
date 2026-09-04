@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -31,7 +32,11 @@ from candidate_screening.ai.interpreter import (
     LanguageInterpreter,
     SummaryGeneratorProtocol,
 )
-from candidate_screening.ai.schemas import ExtractedValue, TurnIntent, TurnInterpretation
+from candidate_screening.ai.schemas import (
+    ExtractedValue,
+    TurnIntent,
+    TurnInterpretation,
+)
 from candidate_screening.application.analytics import (
     AnalyticsEvent,
     AnalyticsEventType,
@@ -41,6 +46,10 @@ from candidate_screening.application.analytics import (
 from candidate_screening.application.conversation import (
     ConversationController,
     ConversationTurnResult,
+)
+from candidate_screening.application.deterministic_interpretation import (
+    interpret_deterministically,
+    recover_location_answer,
 )
 from candidate_screening.application.guardrails import inspect_message, summary_is_safe
 from candidate_screening.domain.enums import (
@@ -85,6 +94,195 @@ def hash_resume_token(token: str) -> str:
 
 def _request_hash(message: str) -> str:
     return hashlib.sha256(message.strip().encode("utf-8")).hexdigest()
+
+
+# These are deliberately small, closed vocabularies.  They are used only for
+# unambiguous control answers and never attempt to replace the language model
+# for natural-language extraction.
+_CONFIRMATION_VALUES: dict[str, bool] = {
+    "yes": True,
+    "y": True,
+    "sí": True,
+    "si": True,
+    "true": True,
+    "correct": True,
+    "correcto": True,
+    "vale": True,
+    "no": False,
+    "n": False,
+    "false": False,
+    "nope": False,
+}
+_LICENSE_VALUES: dict[str, bool] = {
+    "yes": True,
+    "y": True,
+    "sí": True,
+    "si": True,
+    "no": False,
+    "n": False,
+    "nope": False,
+}
+_DISCLOSURE_ACKNOWLEDGEMENTS = frozenset(
+    {
+        "yes",
+        "y",
+        "sí",
+        "si",
+        "yes please",
+        "sí por favor",
+        "si por favor",
+        "sure",
+        "okay",
+        "ok",
+        "vale",
+        "de acuerdo",
+        "adelante",
+        "go on",
+        "go ahead",
+        "continue",
+        "let's continue",
+        "lets continue",
+        "start",
+        "start please",
+        "empecemos",
+        "empecemos por favor",
+        "empezamos",
+        "comencemos",
+        "continuar",
+        "continuemos",
+    }
+)
+_NAME_PREFIX = re.compile(
+    r"^(?:my\s+name\s+is|name\s+is|i\s+am|i['’]?m|me\s+llamo|mi\s+nombre\s+es)\s+(.+?)\s*[.!?]?$",
+    re.IGNORECASE,
+)
+_NAME_TOKEN = re.compile(r"^[^\W\d_]+(?:[-'’][^\W\d_]+)*$", re.UNICODE)
+_NON_NAME_TOKENS = frozenset(
+    {
+        "adelante",
+        "and",
+        "area",
+        "at",
+        "available",
+        "años",
+        "año",
+        "begin",
+        "can",
+        "center",
+        "city",
+        "ciudad",
+        "completo",
+        "comencemos",
+        "continue",
+        "continuar",
+        "continuemos",
+        "delivery",
+        "empecemos",
+        "empezamos",
+        "es",
+        "experience",
+        "favor",
+        "fines",
+        "from",
+        "full",
+        "gracias",
+        "go",
+        "have",
+        "has",
+        "home",
+        "interesado",
+        "interested",
+        "is",
+        "live",
+        "lives",
+        "llamo",
+        "licencia",
+        "license",
+        "mi",
+        "my",
+        "name",
+        "no",
+        "on",
+        "ok",
+        "okay",
+        "part",
+        "parcial",
+        "please",
+        "por",
+        "reparto",
+        "schedule",
+        "si",
+        "sí",
+        "start",
+        "sure",
+        "tengo",
+        "thanks",
+        "tiene",
+        "tiempo",
+        "trabajar",
+        "trabajo",
+        "valid",
+        "vigente",
+        "weekends",
+        "years",
+        "y",
+        "zona",
+        "yes",
+        "central",
+        "centro",
+        "east",
+        "este",
+        "north",
+        "norte",
+        "south",
+        "sur",
+        "west",
+        "oeste",
+        "zone",
+    }
+)
+
+
+def _normalize_short_message(message: str) -> str:
+    """Normalize exact control replies without interpreting free-form prose."""
+
+    normalized = re.sub(r"[.,!?;:¡¿]+", " ", message.casefold())
+    return " ".join(normalized.split())
+
+
+def _extract_simple_full_name(message: str) -> str | None:
+    """Return a conservative name-only answer, or ``None`` for free-form text.
+
+    The parser is intentionally limited to a short alphabetic answer (or an
+    explicit name prefix). Bare names must look like a proper-name phrase.
+    Multi-field answers, questions, and prose stay on the model path so this
+    optimization cannot make a business decision from an ambiguous message.
+    """
+
+    collapsed = " ".join(message.split()).strip()
+    prefix_match = _NAME_PREFIX.match(collapsed)
+    candidate = prefix_match.group(1) if prefix_match else collapsed
+    candidate = candidate.strip(" .,!?;:¡¿")
+    if not candidate or any(marker in candidate for marker in (",", ";", "|")):
+        return None
+    words = candidate.split()
+    # A one-word response is too easy to confuse with an acknowledgement or an
+    # unrelated answer. Keep those on the model path even with an explicit
+    # prefix; the existing schema does not require us to guess a full name.
+    if len(words) < 2 or len(words) > 6:
+        return None
+    # An unprefixed answer is treated as a name only when it looks like a
+    # proper-name phrase. This keeps common short prose (for example
+    # ``spoken answer``) and location phrases (for example ``Madrid centro``)
+    # on the model path. Explicit prefixes such as ``Me llamo ...`` may use
+    # normal sentence casing.
+    if prefix_match is None and any(not word[0].isupper() for word in words):
+        return None
+    if any(not _NAME_TOKEN.fullmatch(word) for word in words):
+        return None
+    if any(word.casefold() in _NON_NAME_TOKENS for word in words):
+        return None
+    return candidate[:200]
 
 
 class CoordinatorError(RuntimeError):
@@ -508,29 +706,48 @@ class TurnCoordinator:
                         )
                         interpreted = InterpreterResult(interpretation=interpretation)
                     else:
-                        dependencies = InterpreterDependencies(
-                            state=reservation.state,
-                            pending_field=reservation.state.current_field,
-                            language=reservation.language,
-                            now=_utc_now(),
-                            local_date=_utc_now().date().isoformat(),
-                            correlation_id=correlation_id,
+                        # Closed-vocabulary control replies and explicit
+                        # name-prefixed answers do not need an LLM call.
+                        # Bare name answers still use the typed interpreter,
+                        # then receive a conservative fallback if a provider
+                        # returns a valid but empty patch.
+                        interpreted = self._deterministic_interpretation(
+                            reservation, guardrail.message
                         )
-                        bounded_history = build_bounded_history(
-                            reservation.history,
-                            max_pairs=self.history_max_pairs,
-                            max_characters=self.history_max_characters,
-                        )
-                        interpreted = await self.interpreter.interpret(
+                        if interpreted is None:
+                            dependencies = InterpreterDependencies(
+                                state=reservation.state,
+                                pending_field=reservation.state.current_field,
+                                language=reservation.language,
+                                now=_utc_now(),
+                                local_date=_utc_now().date().isoformat(),
+                                correlation_id=correlation_id,
+                            )
+                            bounded_history = build_bounded_history(
+                                reservation.history,
+                                max_pairs=self.history_max_pairs,
+                                max_characters=self.history_max_characters,
+                            )
+                            interpreted = await self.interpreter.interpret(
+                                guardrail.message,
+                                dependencies,
+                                message_history=bounded_history,
+                            )
+                            interpreted = self._recover_unambiguous_confirmation(
+                                interpreted, reservation, guardrail.message
+                            )
+                            interpreted = self._recover_unambiguous_license_answer(
+                                interpreted, reservation, guardrail.message
+                            )
+                            interpreted = self._recover_unambiguous_name_answer(
+                                interpreted, reservation, guardrail.message
+                            )
+                    if not guardrail.prompt_injection and not guardrail.sensitive_data:
+                        interpreted = recover_location_answer(
+                            reservation.state,
                             guardrail.message,
-                            dependencies,
-                            message_history=bounded_history,
-                        )
-                        interpreted = self._recover_unambiguous_confirmation(
-                            interpreted, reservation, guardrail.message
-                        )
-                        interpreted = self._recover_unambiguous_license_answer(
-                            interpreted, reservation, guardrail.message
+                            interpreted,
+                            service_area_matcher=self.controller.service_area_matcher,
                         )
                     outcome = self.controller.process(
                         reservation.state,
@@ -635,6 +852,15 @@ class TurnCoordinator:
     # Compatibility alias used by HTTP adapters and tests.
     handle_turn = process_turn
 
+    def _deterministic_interpretation(
+        self, reservation: _Reservation, message: str
+    ) -> InterpreterResult | None:
+        return interpret_deterministically(
+            reservation.state,
+            message,
+            service_area_matcher=self.controller.service_area_matcher,
+        )
+
     @staticmethod
     def _recover_unambiguous_confirmation(
         interpreted: InterpreterResult,
@@ -656,22 +882,8 @@ class TurnCoordinator:
             or interpretation.confirmation is not None
         ):
             return interpreted
-        normalized = " ".join(message.casefold().split())
-        values = {
-            "yes": True,
-            "y": True,
-            "sí": True,
-            "si": True,
-            "true": True,
-            "correct": True,
-            "correcto": True,
-            "vale": True,
-            "no": False,
-            "n": False,
-            "false": False,
-            "nope": False,
-        }
-        value = values.get(normalized)
+        normalized = _normalize_short_message(message)
+        value = _CONFIRMATION_VALUES.get(normalized)
         if value is None:
             return interpreted
         return replace(
@@ -698,9 +910,8 @@ class TurnCoordinator:
             or interpretation.drivers_license is not None
         ):
             return interpreted
-        normalized = " ".join(message.casefold().split())
-        values = {"yes": True, "sí": True, "si": True, "no": False}
-        value = values.get(normalized)
+        normalized = _normalize_short_message(message)
+        value = _LICENSE_VALUES.get(normalized)
         if value is None:
             return interpreted
         patched = interpretation.model_copy(
@@ -711,6 +922,67 @@ class TurnCoordinator:
             }
         )
         return replace(interpreted, interpretation=patched)
+
+    @staticmethod
+    def _recover_unambiguous_name_answer(
+        interpreted: InterpreterResult,
+        reservation: _Reservation,
+        message: str,
+    ) -> InterpreterResult:
+        """Recover a clear bare name when the model returns an empty patch.
+
+        ``TurnInterpretation`` intentionally permits an empty patch for
+        question-only/off-topic turns.  Some providers can therefore return
+        a valid default object for a plainly answered name prompt.  Apply the
+        conservative name parser only when the model supplied no other fact;
+        all multi-field, correction, and ambiguous messages remain model-owned.
+        """
+
+        interpretation = interpreted.interpretation
+        if reservation.state.current_field is not ScreeningField.FULL_NAME:
+            return interpreted
+        if interpretation.intent not in {TurnIntent.ANSWER, TurnIntent.UNKNOWN}:
+            return interpreted
+        if interpretation.full_name is not None and (
+            interpretation.full_name.provided
+            or interpretation.full_name.ambiguous
+            or interpretation.full_name.correction
+        ):
+            return interpreted
+        if (
+            any(
+                value is not None
+                for value in (
+                    interpretation.drivers_license,
+                    interpretation.location,
+                    interpretation.availability,
+                    interpretation.preferred_schedule,
+                    interpretation.delivery_experience,
+                    interpretation.start_availability,
+                )
+            )
+            or interpretation.candidate_questions
+        ):
+            return interpreted
+        name = _extract_simple_full_name(message)
+        if name is None:
+            return interpreted
+        patched = interpretation.model_copy(
+            update={
+                # This repairs the legacy state where the name prompt was
+                # already shown but the disclosure flag was not persisted.
+                "disclosure_acknowledged": True,
+                "full_name": ExtractedValue(
+                    value=name,
+                    provided=True,
+                    evidence=message[:500],
+                ),
+            }
+        )
+        usage = dict(interpreted.usage)
+        usage["deterministic_fallback"] = True
+        usage["deterministic_fallback_field"] = ScreeningField.FULL_NAME.value
+        return replace(interpreted, interpretation=patched, usage=usage)
 
     async def _reserve_turn(
         self,

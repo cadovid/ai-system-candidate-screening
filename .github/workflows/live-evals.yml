@@ -10,8 +10,9 @@ on:
         type: choice
         options:
           - openai:gpt-5.6-luna
-          - openrouter:deepseek/deepseek-v4-flash:free
+          - openrouter:openrouter/free
           - groq:openai/gpt-oss-20b
+          - groq:openai/gpt-oss-120b
       budget_usd:
         description: "Operator-approved spend threshold (USD; workflow check only, not a provider billing cap)"
         required: true
@@ -53,13 +54,13 @@ jobs:
                 exit 1
               fi
               ;;
-            openrouter:deepseek/deepseek-v4-flash:free)
+            openrouter:openrouter/free)
               if [ -z "${OPENROUTER_API_KEY}" ]; then
                 echo "OPENROUTER_API_KEY is not configured for the selected live evaluation" >&2
                 exit 1
               fi
               ;;
-            groq:openai/gpt-oss-20b)
+            groq:openai/gpt-oss-20b|groq:openai/gpt-oss-120b)
               if [ -z "${GROQ_API_KEY}" ]; then
                 echo "GROQ_API_KEY is not configured for the selected live evaluation" >&2
                 exit 1

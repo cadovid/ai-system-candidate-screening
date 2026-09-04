@@ -197,14 +197,11 @@ class ConversationController:
             field = reconciliation.issues[0].field or self.screening_engine.next_field(next_state)
             if field is not None:
                 next_state.current_field = field
-            if (
-                next_state.pending_confirmation is not None
-                and next_state.pending_confirmation.reason == "service_area_city"
-            ):
-                # Keep the complete city-area offer visible after an
-                # ambiguous, off-topic, or question-only reply; a generic
-                # location clarification would hide the yes/no action the
-                # candidate still needs to resolve.
+            if next_state.pending_confirmation is not None:
+                # Keep an explicit confirmation action visible after a
+                # correction, fuzzy location, city-level offer, or
+                # question-only reply. A generic clarification would hide the
+                # yes/no action the candidate still needs to resolve.
                 prompt = self._pending_prompt(language, next_state.pending_confirmation)
             else:
                 prompt = self._clarification(language, field)
@@ -219,7 +216,7 @@ class ConversationController:
         if faq_answer:
             prompt = f"{faq_answer.strip()}\n\n{prompt}"
         elif (
-            interpretation.intent.name in {"QUESTION", "MIXED"}
+            interpretation.intent.name in {"QUESTION", "MIXED", "OFF_TOPIC"}
             and interpretation.response_requested
         ):
             prompt = f"{self._unknown_question(language)}\n\n{prompt}"

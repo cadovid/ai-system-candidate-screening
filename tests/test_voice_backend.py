@@ -200,7 +200,7 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
 
     text_first = await text_coordinator.process_turn(
         text_conversation.conversation_id,
-        "Alex Example",
+        "alex example",
         "text-name",
         input_mode=InteractionMode.TEXT,
     )
@@ -212,7 +212,7 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
     )
     voice_first = await voice_coordinator.process_turn(
         voice_conversation.conversation_id,
-        "Alex Example",
+        "alex example",
         "voice-name",
         input_mode=InteractionMode.VOICE,
     )

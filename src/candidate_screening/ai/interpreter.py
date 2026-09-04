@@ -18,7 +18,10 @@ from .schemas import RecruiterSummaryOutput, TurnInterpretation
 class AIProviderError(RuntimeError):
     """Provider-neutral error safe for application-layer policy decisions."""
 
-    def __init__(self, category: Literal["rate_limited", "unavailable"] = "unavailable") -> None:
+    def __init__(
+        self,
+        category: Literal["rate_limited", "unavailable", "invalid_output"] = "unavailable",
+    ) -> None:
         super().__init__("model provider request failed")
         self.category = category
 

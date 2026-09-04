@@ -15,5 +15,12 @@ Each case can assert more than a terminal status:
 - `security_event`, `retryable`, and `error_type` check failure semantics.
 
 The live runner accepts the same shape and only differs in how each turn is
-interpreted. No candidate data or provider credential belongs in this
-directory.
+interpreted. It uses the provider selected by `LLM_MODEL` (Groq, OpenRouter, or
+OpenAI); the manual live workflow and the opt-in typed provider contract are
+documented in the root `README.md`. No candidate data or provider credential
+belongs in this directory.
+
+The `correction_requires_confirmation` fixture uses `next week` to exercise
+the model extraction contract for an actionable relative start period. Its
+expected canonical precision is `week` with no exact date; the deterministic
+engine still evaluates only the validated state.

@@ -153,3 +153,46 @@ def test_reconciliation_uses_deterministic_service_area_suggestion(
     assert result.state.location.match_status is LocationMatchStatus.NEEDS_CONFIRMATION
     assert result.state.pending_confirmation is not None
     assert result.state.pending_confirmation.field is ScreeningField.LOCATION
+
+
+def test_reconciliation_repairs_catalog_location_with_default_provided_flag(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    result = reconcile_interpretation(
+        ScreeningState.empty(Language.EN),
+        TurnInterpretation(
+            location=ExtractedLocation(
+                raw_value="Madrid centro",
+                city="Madrid",
+                zone="Centro",
+                provided=False,
+                evidence="Madrid centro",
+            )
+        ),
+        service_area_matcher=service_area_matcher,
+    )
+
+    assert result.state.location.service_area_id == "es-mad-centro"
+    assert result.state.location.match_status is LocationMatchStatus.EXACT
+    assert result.state.location.confirmed is True
+
+
+def test_reconciliation_does_not_repair_contradictory_location_evidence(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    result = reconcile_interpretation(
+        ScreeningState.empty(Language.EN),
+        TurnInterpretation(
+            location=ExtractedLocation(
+                raw_value="Madrid centro",
+                city="Madrid",
+                zone="Centro",
+                provided=False,
+                evidence="Bilbao",
+            )
+        ),
+        service_area_matcher=service_area_matcher,
+    )
+
+    assert result.state.location.service_area_id is None
+    assert result.state.location.match_status is LocationMatchStatus.UNRESOLVED

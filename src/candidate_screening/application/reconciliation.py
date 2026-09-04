@@ -31,7 +31,11 @@ from candidate_screening.domain.models import (
     StartDatePrecision,
     ValidationIssue,
 )
-from candidate_screening.domain.service_areas import ServiceAreaMatch, ServiceAreaMatcher
+from candidate_screening.domain.service_areas import (
+    ServiceAreaMatch,
+    ServiceAreaMatcher,
+    normalize_location,
+)
 
 
 @dataclass(slots=True)
@@ -156,6 +160,142 @@ def _location_raw_value(patch: ExtractedLocation) -> str:
 
     raw = patch.raw_value or " ".join(part for part in (patch.city, patch.zone) if part)
     return raw.strip()
+
+
+def _repair_location_mislabelled_as_name(
+    state: ScreeningState,
+    interpretation: TurnInterpretation,
+    *,
+    service_area_matcher: ServiceAreaMatcher,
+    issues: list[ValidationIssue],
+) -> TurnInterpretation:
+    """Keep a catalogue location from being persisted as a candidate name.
+
+    A provider can occasionally assign a location phrase to the wrong
+    structured field. A deterministic catalogue match gives us a safe,
+    auditable signal for correcting that mapping. When the name question is
+    active and no name exists, the value is rejected and the name is requested
+    again; otherwise it is reinterpreted as a location so the candidate's
+    known answer is not lost.
+    """
+
+    patch = interpretation.full_name
+    if (
+        patch is None
+        or not patch.provided
+        or not isinstance(patch.value, str)
+        or not patch.value.strip()
+    ):
+        return interpretation
+    if interpretation.location is not None and interpretation.location.provided:
+        # A valid location patch is already present; discard only the
+        # suspicious duplicate name field.
+        match = service_area_matcher.match(patch.value)
+        if match.area is None and match.city is None:
+            return interpretation
+        return interpretation.model_copy(update={"full_name": None})
+
+    match = service_area_matcher.match(patch.value)
+    if match.area is None and match.city is None:
+        return interpretation
+    if state.current_field is ScreeningField.FULL_NAME and state.full_name is None:
+        issues.append(
+            _issue(
+                ScreeningField.FULL_NAME,
+                "field_mismatch",
+                "full_name.clarification_required",
+            )
+        )
+        return interpretation.model_copy(update={"full_name": None})
+
+    location = ExtractedLocation(
+        raw_value=patch.value,
+        city=match.city,
+        zone=match.area.zone if match.area is not None else None,
+        provided=True,
+        correction=patch.correction,
+        evidence=patch.evidence,
+        confidence=patch.confidence,
+    )
+    return interpretation.model_copy(update={"full_name": None, "location": location})
+
+
+def _repair_location_provided_flag(
+    state: ScreeningState,
+    interpretation: TurnInterpretation,
+    *,
+    service_area_matcher: ServiceAreaMatcher,
+) -> TurnInterpretation:
+    """Recover a location patch whose content contradicts ``provided=false``.
+
+    ``provided`` is a model extraction hint, not a service-area decision. A
+    provider can emit a valid location object with the flag left at its schema
+    default, which would otherwise make reconciliation silently discard an
+    explicit answer. The matcher must identify a catalogue result before the
+    flag is changed. Unsupported model text is
+    left absent, so it cannot become a disqualification or an eligible area by
+    virtue of this recovery path. The coordinator separately gates recovery
+    from an omitted nested patch on the active/pending location field because
+    it has the original user message available for grounding.
+    """
+
+    patch = interpretation.location
+    if patch is None or patch.provided or patch.ambiguous:
+        return interpretation
+    pending = state.pending_confirmation
+    raw = _location_raw_value(patch)
+    if not raw:
+        return interpretation
+    if not patch.evidence:
+        # A patch with neither ``provided`` nor evidence is indistinguishable
+        # from a provider default object. The coordinator can recover such a
+        # patch from the original user message; direct reconciliation must not
+        # promote model-only text into a candidate fact.
+        return interpretation
+    evidence = normalize_location(patch.evidence)
+    raw_folded = normalize_location(raw)
+    city = patch.city
+    if city is None and pending is not None and pending.reason == "service_area_city":
+        city = state.location.city
+    match = service_area_matcher.match(raw, city=city, zone=patch.zone)
+    # Evidence is required to be a quote from the current user message. If it
+    # does not contain the structured phrase verbatim (for example, an
+    # English ``city center`` quote paired with a Spanish ``Madrid Centro``
+    # extraction), accept it only when deterministic matching proves that both
+    # texts identify the same exact catalogue area or known city.
+    if raw_folded not in evidence and not all(
+        token in evidence.split() for token in raw_folded.split()
+    ):
+        evidence_match = service_area_matcher.match(
+            patch.evidence,
+        )
+        same_area = (
+            match.area is not None
+            and evidence_match.area is not None
+            and match.area.id == evidence_match.area.id
+        )
+        same_city = (
+            match.is_city_level
+            and evidence_match.is_city_level
+            and match.city == evidence_match.city
+        )
+        if not (same_area or same_city):
+            return interpretation
+    if match.status not in {
+        LocationMatchStatus.EXACT,
+        LocationMatchStatus.AMBIGUOUS,
+        LocationMatchStatus.NEEDS_CONFIRMATION,
+    }:
+        return interpretation
+    repaired = patch.model_copy(
+        update={
+            "provided": True,
+            "raw_value": raw,
+            "city": patch.city or match.city or city,
+            "confidence": max(patch.confidence, match.confidence),
+        }
+    )
+    return interpretation.model_copy(update={"location": repaired})
 
 
 def _location_from_match(
@@ -288,6 +428,18 @@ def reconcile_interpretation(
 
     if interpretation.disclosure_acknowledged is True:
         next_state.disclosure_acknowledged = True
+
+    interpretation = _repair_location_provided_flag(
+        next_state,
+        interpretation,
+        service_area_matcher=service_area_matcher,
+    )
+    interpretation = _repair_location_mislabelled_as_name(
+        next_state,
+        interpretation,
+        service_area_matcher=service_area_matcher,
+        issues=issues,
+    )
 
     pending_unresolved = False
     pending_location_applied = False

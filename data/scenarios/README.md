@@ -11,3 +11,7 @@ The expected status is always checked against the deterministic screening
 engine; it is not an LLM-provided decision. Expectations may additionally
 specify reason codes, canonical state fragments, language traces, FAQ answers,
 correction confirmation, security events, retryability, and error types.
+
+The correction fixture deliberately uses `next week`: the interpreter should
+preserve it as an unambiguous `week` start period without inventing a calendar
+date. Vague periods remain eligible for clarification instead.

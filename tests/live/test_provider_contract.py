@@ -6,10 +6,15 @@ import os
 from datetime import UTC, datetime
 
 import pytest
+from pydantic_ai import Agent, NativeOutput
 from pydantic_ai.models import override_allow_model_requests
 
 from candidate_screening.ai.interpreter import InterpreterDependencies
-from candidate_screening.ai.pydantic_ai import PydanticAIInterpreter, PydanticAIModelFactory
+from candidate_screening.ai.pydantic_ai import (
+    PydanticAIInterpreter,
+    PydanticAIModelFactory,
+)
+from candidate_screening.ai.schemas import TurnInterpretation
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import Language
 from candidate_screening.domain.models import ScreeningState
@@ -72,3 +77,48 @@ async def test_selected_native_provider_returns_typed_interpretation() -> None:
     assert result.interpretation.location.provided is True
     assert result.interpretation.location.city == "Madrid"
     assert result.usage.get("requests", 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_groq_gpt_oss_accepts_turn_interpretation_native_strict_json() -> None:
+    """Opt-in live assertion for the provider path that avoids output tools."""
+
+    settings = _live_settings()
+    if settings.llm_provider != "groq" or settings.llm_model_name not in {
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+    }:
+        pytest.skip("native strict contract applies to Groq GPT-OSS models only")
+
+    model = PydanticAIModelFactory().create(settings)
+    agent = Agent(
+        model=model,
+        output_type=NativeOutput(TurnInterpretation, strict=True),
+        deps_type=InterpreterDependencies,
+        instructions=(
+            "Extract only explicit facts from the candidate's latest message. "
+            "Return the requested typed interpretation and do not decide eligibility."
+        ),
+        retries=settings.llm_max_retries,
+    )
+    dependencies = InterpreterDependencies(
+        state=ScreeningState.empty(Language.ES),
+        language=Language.ES,
+        now=datetime(2026, 1, 2, tzinfo=UTC),
+        local_date="2026-01-02",
+    )
+    with override_allow_model_requests(True):
+        result = await agent.run(
+            "Me llamo Laura García, tengo carnet y vivo en Madrid.",
+            deps=dependencies,
+        )
+
+    assert result.output.full_name is not None
+    assert result.output.full_name.value == "Laura García"
+    assert result.output.full_name.provided is True
+    assert result.output.drivers_license is not None
+    assert result.output.drivers_license.value is True
+    assert result.output.drivers_license.provided is True
+    assert result.output.location is not None
+    assert result.output.location.city == "Madrid"
+    assert result.output.location.provided is True

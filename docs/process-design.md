@@ -42,6 +42,8 @@ Fields are requested in this order, skipping values already present:
 6. delivery experience in years, with optional platforms; and
 7. start availability, preserving a natural-language value and a safe precision (`exact`, `asap`, `week`, `month`, or `unknown`).
 
+An actionable relative period such as “next week”, “next month”, or “as soon as possible” is sufficient even when the candidate does not provide an exact calendar date. The language interpreter should set the corresponding typed precision and leave the date empty; only genuinely unclear timing (for example, “sometime”) is ambiguous. This guidance affects extraction only—the deterministic rules evaluate the validated canonical value.
+
 A single natural-language answer may provide several fields. The assistant asks one clear next question after applying the supported fields, and does not ask the model to compose an eligibility explanation.
 
 ## Stage 5 — resolve location and questions

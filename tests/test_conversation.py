@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from candidate_screening.ai.schemas import ExtractedLocation, ExtractedValue, TurnInterpretation
-from candidate_screening.application import ConversationController
+from pathlib import Path
+
+from candidate_screening.ai.schemas import (
+    ExtractedLocation,
+    ExtractedValue,
+    TurnIntent,
+    TurnInterpretation,
+)
+from candidate_screening.application import ConversationController, FAQCatalog
 from candidate_screening.domain import (
     Language,
     LocationMatchStatus,
@@ -241,3 +248,58 @@ def test_unsupported_location_message_echoes_exact_interpreted_area(
     )
     assert result.decision.status is ScreeningStatus.DISQUALIFIED
     assert "Bilbao city centre" in result.assistant_message
+
+
+def test_faq_question_is_answered_and_screening_prompt_resumes(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    catalog = FAQCatalog.from_file(Path("data/faq/faq.json"))
+    controller = ConversationController(
+        ScreeningEngine(), service_area_matcher, faq_catalog=catalog
+    )
+    result = controller.process(
+        ScreeningState.empty(Language.EN),
+        TurnInterpretation(
+            intent=TurnIntent.QUESTION,
+            response_requested=True,
+            candidate_questions=["What schedules are available?"],
+        ),
+    )
+    assert result.faq_answered is True
+    assert "Morning" in result.assistant_message
+    assert "What is your full name?" in result.assistant_message
+    assert result.next_field is ScreeningField.FULL_NAME
+
+
+def test_unknown_question_is_bounded_and_does_not_mutate_screening_state(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    catalog = FAQCatalog.from_file(Path("data/faq/faq.json"))
+    controller = ConversationController(
+        ScreeningEngine(), service_area_matcher, faq_catalog=catalog
+    )
+    state = ScreeningState.empty(Language.EN)
+    result = controller.process(
+        state,
+        TurnInterpretation(
+            intent=TurnIntent.QUESTION,
+            response_requested=True,
+            candidate_questions=["What is the salary?"],
+        ),
+    )
+    assert result.faq_answered is False
+    assert "don’t have that information" in result.assistant_message
+    assert result.state.full_name is None
+    assert result.next_field is ScreeningField.FULL_NAME
+
+
+def test_off_topic_message_is_acknowledged_before_resuming_screening(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    controller = ConversationController(ScreeningEngine(), service_area_matcher)
+    result = controller.process(
+        ScreeningState.empty(Language.EN),
+        TurnInterpretation(intent=TurnIntent.OFF_TOPIC, response_requested=True),
+    )
+    assert result.next_field is ScreeningField.FULL_NAME
+    assert "don’t have that information" in result.assistant_message

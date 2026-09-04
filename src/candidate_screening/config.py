@@ -36,6 +36,14 @@ class Settings(BaseSettings):
         default=None, validation_alias="OPENROUTER_API_KEY"
     )
     groq_api_key: SecretStr | None = Field(default=None, validation_alias="GROQ_API_KEY")
+    # Groq's native client retry budget is intentionally kept at zero in the
+    # adapter.  This is the separate, bounded retry budget for malformed or
+    # otherwise invalid structured output.  The global LLM_MAX_RETRIES value
+    # remains an upper bound for backwards-compatible operator controls.
+    groq_output_retries: int = Field(default=1, ge=0, le=1, validation_alias="GROQ_OUTPUT_RETRIES")
+    groq_reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="low", validation_alias="GROQ_REASONING_EFFORT"
+    )
     openrouter_data_collection: Literal["allow", "deny"] = Field(
         default="deny", validation_alias="OPENROUTER_DATA_COLLECTION"
     )
@@ -48,6 +56,9 @@ class Settings(BaseSettings):
         default=15.0, ge=1.0, le=120.0, validation_alias="LLM_TIMEOUT_SECONDS"
     )
     llm_max_retries: int = Field(default=2, ge=0, le=5, validation_alias="LLM_MAX_RETRIES")
+    llm_extraction_temperature: float = Field(
+        default=0.0, ge=0.0, le=2.0, validation_alias="LLM_EXTRACTION_TEMPERATURE"
+    )
     llm_max_output_tokens: int = Field(
         default=800, ge=64, le=4_000, validation_alias="LLM_MAX_OUTPUT_TOKENS"
     )
@@ -85,13 +96,17 @@ class Settings(BaseSettings):
         value = value.strip()
         if not value or ":" not in value:
             raise ValueError(
-                "LLM_MODEL must use a provider:model form, e.g. groq:openai/gpt-oss-20b"
+                "LLM_MODEL must use a provider:model form, e.g. groq:openai/gpt-oss-20b or "
+                "openrouter:openrouter/free"
             )
         provider, model_name = value.split(":", 1)
         if provider.casefold() not in {"openai", "openrouter", "groq"}:
             raise ValueError("LLM_MODEL provider must be 'openai', 'openrouter', or 'groq'")
         if not model_name.strip():
             raise ValueError("LLM_MODEL must include a non-empty model name")
+        # Model availability is provider-owned and changes independently of
+        # this application. Keep the suffix opaque so a valid provider model
+        # can be selected through configuration without a source change.
         return value
 
     @property
