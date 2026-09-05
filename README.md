@@ -26,7 +26,7 @@ Actionable relative periods such as “next week”, “next month”, and “as
 
 ## Demo in one minute
 
-The browser candidate view is `/`; the recruiter view is `/recruiter`. Both are served by the same FastAPI application. The candidate page stores the opaque resume token in browser local storage so a demo can resume a conversation. The recruiter page asks for the separately configured internal API key.
+The browser candidate view is `/`; the recruiter view is `/recruiter`; and the aggregate analytics dashboard is `/analytics`. All are served by the same FastAPI application. The candidate page stores the opaque resume token in browser local storage so a demo can resume a conversation. The recruiter and analytics pages ask for the separately configured internal API key before loading protected data.
 
 The bundled catalogue and FAQ are fictional fixtures for demonstration. They include Madrid, Barcelona, Valencia, Sevilla, Málaga, and selected Mexico City, Guadalajara, and Monterrey areas; they are not a real employer’s coverage map, job description, pay policy, or hiring criteria. Every FAQ entry is marked `fictional_demo: true`. Replace both data files and have the criteria reviewed before any real use.
 
@@ -72,6 +72,10 @@ Candidate details preserve the existing summary, status and handoff metadata, re
 
 While the queue request is loading, the status filter is disabled; it becomes available only after a valid queue payload is rendered. The `No screenings yet` state is reserved for a successful response containing zero records, while an invalid or failed response is shown as an error. Both views retain keyboard navigation, semantic controls, visible focus states, sufficient contrast, accessible loading and status announcements, touch-friendly targets, and `prefers-reduced-motion` support. Status meaning is never communicated by color alone.
 
+### Analytics dashboard
+
+The analytics page at `/analytics` is a presentation layer over the existing protected `GET /api/v1/internal/analytics` endpoint. It shows aggregate KPI cards, status distribution, completion and handoff metrics, language and input-mode mix, reliability signals, drop-off stages, deterministic disqualification reasons, audit events, and clarification retries. It never displays candidate transcripts or ranking scores. Entering the internal key loads the data for that page only; the key is not persisted by the browser.
+
 ## Architecture
 
 ```mermaid
@@ -91,6 +95,7 @@ flowchart LR
   TURN --> API[FastAPI API]
   CREATE --> API
   R[Recruiter browser or internal client] -->|Bearer internal key| API
+  AD[Analytics browser dashboard] -->|Bearer internal key| API
   API --> MW[Correlation, body, rate and concurrency limits]
   MW --> COORD[TurnCoordinator]
   COORD --> G[Guardrails: redact and block]
@@ -186,7 +191,7 @@ pdm run migrate
 pdm run dev
 ```
 
-Open <http://127.0.0.1:8001/> for the candidate view, <http://127.0.0.1:8001/recruiter> for the internal view, or <http://127.0.0.1:8001/docs> for FastAPI’s generated OpenAPI UI. Set the key for the provider selected by `LLM_MODEL` in `.env` for live turns. Never commit `.env`, provider keys, resume tokens, or candidate data.
+Open <http://127.0.0.1:8001/> for the candidate view, <http://127.0.0.1:8001/recruiter> for the internal queue, <http://127.0.0.1:8001/analytics> for the aggregate dashboard, or <http://127.0.0.1:8001/docs> for FastAPI’s generated OpenAPI UI. Set the key for the provider selected by `LLM_MODEL` in `.env` for live turns. Never commit `.env`, provider keys, resume tokens, or candidate data.
 
 Useful development commands:
 
@@ -342,7 +347,7 @@ curl -sS -X POST "$BASE/api/v1/internal/screenings/SESSION_ID/reviews" \
 
 Persisted averages use sessions whose status is `qualified`, `disqualified`, or `needs_review` (an explicit `completed_at` also qualifies a non-abandoned session). Average messages count user messages attached to completed turns, and average turns count turns with `status=completed`; both use the number of completed sessions as their denominator. Duration uses only valid non-negative `started_at`/`completed_at` pairs. Language counts include every session (`unknown` when absent), FAQ usage counts one answer per turn even when both legacy turn metadata and the dedicated audit event exist, clarification counts sum the persisted per-field counters, and disqualification reasons prefer the persisted result over a duplicate audit event. Drop-off stages count `in_progress` and `abandoned` sessions using their persisted current/next field and contain no message text or candidate identifiers.
 
-Public operations endpoints are `/healthz`, `/livez`, and `/readyz`. The internal route aliases `/internal` and `/analytics`, and the candidate alias `/candidate`, remain for local compatibility but are omitted from OpenAPI; clients should use the versioned paths.
+Public operations endpoints are `/healthz`, `/livez`, and `/readyz`. The internal route aliases `/internal` (screening/review), `/internal/analytics`, and `/api/v1/analytics` remain for local compatibility but are omitted from OpenAPI; clients should use the versioned paths. Browser navigation to `/analytics` receives the dashboard shell; non-HTML requests retain the protected JSON compatibility response, while `/api/v1/internal/analytics` remains the canonical API route.
 
 ## FAQ, “RAG”, and knowledge boundaries
 

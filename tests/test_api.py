@@ -177,6 +177,43 @@ async def test_favicon_is_served() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analytics_dashboard_is_a_shell_and_json_api_remains_protected() -> None:
+    coordinator = FakeCoordinator()
+    async with await _client(coordinator) as client:
+        candidate = await client.get("/")
+        recruiter = await client.get("/recruiter")
+        dashboard = await client.get("/analytics", headers={"Accept": "text/html"})
+        assert candidate.status_code == 200
+        assert b'class="candidate-page"' in candidate.content
+        assert recruiter.status_code == 200
+        assert b'class="recruiter-page"' in recruiter.content
+        assert dashboard.status_code == 200
+        assert dashboard.headers["content-type"].startswith("text/html")
+        assert b"Screening analytics" in dashboard.content
+        assert b"/static/analytics.js" in dashboard.content
+
+        root_json_alias = await client.get("/analytics", headers={"Accept": "application/json"})
+        assert root_json_alias.status_code == 401
+
+        authorized_root_alias = await client.get(
+            "/analytics",
+            headers={"Accept": "application/json", "Authorization": "Bearer internal"},
+        )
+        assert authorized_root_alias.status_code == 200
+        assert authorized_root_alias.json()["total_screenings"] == 0
+
+        json_alias = await client.get("/api/v1/analytics")
+        assert json_alias.status_code == 401
+
+        authorized_alias = await client.get(
+            "/api/v1/analytics",
+            headers={"Authorization": "Bearer internal"},
+        )
+        assert authorized_alias.status_code == 200
+        assert authorized_alias.json()["total_screenings"] == 0
+
+
+@pytest.mark.asyncio
 async def test_internal_analytics_is_protected_and_health_is_public() -> None:
     coordinator = FakeCoordinator()
     async with await _client(coordinator) as client:

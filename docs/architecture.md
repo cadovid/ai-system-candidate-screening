@@ -12,6 +12,7 @@ flowchart TB
     BrowserSTT[Browser SpeechRecognition / STT]
     BrowserTTS[Browser speechSynthesis / optional TTS]
     Recruiter[Recruiter status board / detail UI]
+    Analytics[Aggregate analytics dashboard]
     VoiceControls -->|spoken input| BrowserSTT
     BrowserSTT -->|interim/final transcript| TextUI
     TextUI -->|typed or edited text + input_mode| Turns["POST /api/v1/candidate/conversations/{id}/turns"]
@@ -64,6 +65,7 @@ flowchart TB
   Turns --> Middleware
   Create --> Middleware
   Recruiter --> Middleware
+  Analytics --> Middleware
   Middleware --> CandidateAPI
   Middleware --> InternalAPI
   CandidateAPI --> Auth
@@ -105,7 +107,9 @@ The candidate surface is defined by [`templates/candidate.html`](../templates/ca
 
 The recruiter surface is defined by [`templates/recruiter.html`](../templates/recruiter.html), [`static/recruiter.css`](../static/recruiter.css), and [`static/recruiter.js`](../static/recruiter.js). It keeps the existing internal-key and API contract but presents the queue as a responsive status board: supported statuses have distinct presentation tones and counts, the filter can show one status column, and the detail panel can be opened and closed without changing the selected screening. Queue loading and errors are explicit UI states: the filter remains disabled until a valid queue response is rendered, `No screenings yet` is shown only for a valid empty result, and malformed or failed responses are shown as errors. The detail view preserves the existing summary, deterministic reason trace, transcript, summary retry, and human-review form.
 
-These are presentation-layer changes only. Candidate turns, recruiter reads/reviews, persistence, screening state, deterministic qualification, provider selection, and API request/response contracts remain shared and unchanged. The page-specific stylesheets are intentionally scoped to `.candidate-page` and `.recruiter-page` so a redesign of one surface cannot regress the other.
+The analytics surface is defined by [`templates/analytics.html`](../templates/analytics.html), [`static/analytics.css`](../static/analytics.css), and [`static/analytics.js`](../static/analytics.js). Browser navigation to `/analytics` receives only the dashboard shell; after an internal key is entered, the page fetches the aggregate-only `/api/v1/internal/analytics` response and renders KPI cards, status bars, workflow health, language/input mix, reliability signals, drop-off stages, disqualification reasons, audit events, and clarification retries. The key remains only in transient page memory and request headers, is not persisted, and the page never receives candidate-level transcript data. Non-HTML requests to the compatibility path retain the protected JSON behavior, while the versioned JSON API remains the canonical contract.
+
+These are presentation-layer changes only. Candidate turns, recruiter reads/reviews, persistence, screening state, deterministic qualification, provider selection, and API request/response contracts remain shared and unchanged. The page-specific stylesheets are intentionally scoped to `.candidate-page`, `.recruiter-page`, and `.analytics-page` so a redesign of one surface cannot regress another.
 
 ### HTTP and security boundary
 

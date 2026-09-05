@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Screening analytics</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/analytics.css">
+</head>
+<body class="analytics-page">
+  <main class="shell analytics-shell" aria-labelledby="analytics-title">
+    <header class="topbar analytics-product-bar">
+      <div class="header-copy">
+        <div class="product-context">
+          <p class="product-name">Recruiter workspace</p>
+          <span class="product-separator" aria-hidden="true">/</span>
+          <p class="eyebrow">Operations</p>
+        </div>
+        <h1 id="analytics-title">Screening analytics</h1>
+        <p class="analytics-intro">Aggregate operational signals for the current screening workflow.</p>
+      </div>
+      <nav class="analytics-nav" aria-label="Workspace navigation">
+        <a class="secondary link-button" href="/recruiter">Recruiter queue</a>
+        <a class="secondary link-button" href="/">Candidate view</a>
+      </nav>
+    </header>
+
+    <section class="secure-access analytics-access" aria-label="Secure analytics access">
+      <div class="notice-copy">
+        <strong>Internal analytics</strong>
+        <span>Use the configured internal API key. This dashboard contains aggregate metrics and no candidate transcript.</span>
+      </div>
+      <form id="analytics-form" class="inline-form">
+        <label for="internal-key">Internal API key</label>
+        <input id="internal-key" type="password" autocomplete="off" required>
+        <button type="submit">Load analytics</button>
+      </form>
+    </section>
+
+    <p id="analytics-status" class="analytics-status" role="status" aria-live="polite"></p>
+
+    <section id="analytics-dashboard" class="analytics-dashboard" aria-live="polite" hidden>
+      <div id="headline-metrics" class="metric-grid" aria-label="Headline metrics"></div>
+
+      <div class="analytics-grid analytics-grid--wide">
+        <section class="analytics-card" aria-labelledby="outcomes-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Screening outcomes</p>
+              <h2 id="outcomes-title">Current status mix</h2>
+            </div>
+          </div>
+          <div id="status-breakdown" class="bar-list"></div>
+        </section>
+
+        <section class="analytics-card" aria-labelledby="completion-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Workflow health</p>
+              <h2 id="completion-title">Completion and handoff</h2>
+            </div>
+          </div>
+          <dl id="workflow-metrics" class="detail-metrics"></dl>
+        </section>
+      </div>
+
+      <div class="analytics-grid">
+        <section class="analytics-card" aria-labelledby="language-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Conversation mix</p>
+              <h2 id="language-title">Language and input mode</h2>
+            </div>
+          </div>
+          <div class="split-lists">
+            <div>
+              <h3>Languages</h3>
+              <div id="language-breakdown" class="compact-list"></div>
+            </div>
+            <div>
+              <h3>Input modes</h3>
+              <div id="mode-breakdown" class="compact-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="analytics-card" aria-labelledby="operations-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Operations</p>
+              <h2 id="operations-title">Reliability signals</h2>
+            </div>
+          </div>
+          <dl id="operations-metrics" class="detail-metrics"></dl>
+        </section>
+      </div>
+
+      <div class="analytics-grid">
+        <section class="analytics-card" aria-labelledby="dropoff-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Candidate journey</p>
+              <h2 id="dropoff-title">Drop-off stages</h2>
+            </div>
+          </div>
+          <div id="dropoff-breakdown" class="compact-list"></div>
+        </section>
+
+        <section class="analytics-card" aria-labelledby="reasons-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Deterministic outcomes</p>
+              <h2 id="reasons-title">Disqualification reasons</h2>
+            </div>
+          </div>
+          <div id="reason-breakdown" class="compact-list"></div>
+        </section>
+      </div>
+
+      <div class="analytics-grid">
+        <section class="analytics-card" aria-labelledby="audit-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Audit activity</p>
+              <h2 id="audit-title">Recorded events</h2>
+            </div>
+          </div>
+          <div id="event-breakdown" class="compact-list"></div>
+        </section>
+
+        <section class="analytics-card" aria-labelledby="clarification-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Conversation friction</p>
+              <h2 id="clarification-title">Clarification retries</h2>
+            </div>
+          </div>
+          <div id="clarification-breakdown" class="compact-list"></div>
+        </section>
+      </div>
+
+      <p class="analytics-footnote">Metrics are aggregate operational data. They are not a candidate ranking or an automated hiring decision.</p>
+    </section>
+  </main>
+  <script src="/static/analytics.js" defer></script>
+</body>
+</html>

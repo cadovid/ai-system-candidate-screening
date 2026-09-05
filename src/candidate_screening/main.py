@@ -22,6 +22,7 @@ from .ai.pydantic_ai import PydanticAIInterpreter, SummaryGenerator
 from .api.limits import SlidingWindowRateLimiter, TurnConcurrencyLimit
 from .api.middleware import CorrelationMiddleware, RequestLimitsMiddleware
 from .api.routes import analytics_router, candidate_router, health_router, internal_router
+from .api.routes.analytics import screening_analytics
 from .api.schemas import ErrorBody, ErrorResponse
 from .application.conversation import ConversationController
 from .application.coordinator import CoordinatorError, TurnCoordinator
@@ -168,6 +169,20 @@ def create_app(
     async def recruiter_page(request: Request) -> HTMLResponse:
         return _TEMPLATES.TemplateResponse(request, "recruiter.html", {"version": __version__})
 
+    @application.get("/analytics", include_in_schema=False)
+    async def analytics_page(request: Request) -> Any:
+        """Serve the dashboard to browsers and preserve JSON alias clients.
+
+        Browser navigation advertises ``text/html`` and receives a shell with
+        no metrics or credentials. Non-HTML clients retain the previous
+        protected JSON compatibility behavior; the versioned endpoint remains
+        the canonical API contract.
+        """
+
+        if "text/html" not in request.headers.get("accept", ""):
+            return await screening_analytics(request)
+        return _TEMPLATES.TemplateResponse(request, "analytics.html", {"version": __version__})
+
     @application.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:
         """Serve the small browser icon without a blocking file-stream task."""
@@ -177,9 +192,10 @@ def create_app(
             media_type="image/svg+xml",
         )
 
-    # Keep the versioned API and a short unversioned alias for local demos.
-    # The alias is deliberately omitted from OpenAPI so clients have one
-    # canonical contract to target.
+    # Keep the versioned API and short unversioned aliases for local demos.
+    # The aliases are deliberately omitted from OpenAPI so clients have one
+    # canonical contract to target. The bare /analytics path is reserved for
+    # the aggregate dashboard above.
     application.include_router(candidate_router, prefix="/api/v1/candidate")
     application.include_router(candidate_router, prefix="/candidate", include_in_schema=False)
     application.include_router(internal_router, prefix="/api/v1/internal")
@@ -187,7 +203,6 @@ def create_app(
     application.include_router(analytics_router, prefix="/api/v1/internal")
     application.include_router(analytics_router, prefix="/internal", include_in_schema=False)
     application.include_router(analytics_router, prefix="/api/v1", include_in_schema=False)
-    application.include_router(analytics_router, prefix="", include_in_schema=False)
     application.include_router(health_router)
 
     return application
