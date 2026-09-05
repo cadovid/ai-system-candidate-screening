@@ -4,6 +4,12 @@ These examples are deliberately synthetic. They show the shape of the state mach
 
 The JSON snippets below omit timestamps and evidence quotes for readability. In the database, accepted fields can retain bounded evidence and a message ID, and every turn carries a state version. Relative periods such as “next week” are intentionally valid start-availability answers: they are stored with `precision: "week"` and no exact date, whereas genuinely vague wording remains subject to clarification.
 
+## Recruiter workspace presentation
+
+The recruiter demo is available at `/recruiter` and uses the same persisted screening results shown in the examples below. After entering the configured internal API key, the queue appears as a responsive board with separate columns for `In progress`, `Needs review`, `Qualified`, `Disqualified`, and `Abandoned`. Status labels use distinct presentation colors but also retain their text labels for accessibility. The status filter can collapse the board to one selected column; it is disabled while the queue is loading and the empty-state message is only shown when the API successfully returns zero screenings.
+
+Selecting `View details` opens the candidate detail panel with the recruiter summary, status and handoff metadata, deterministic reason codes, missing fields, expandable rule trace, transcript, summary retry action, and review form. The panel can be closed to return to the board. On small screens it stacks below the board and is brought into view after selection. These visual controls do not alter the canonical screening state or recruiter API behavior.
+
 ## Spanish happy path
 
 ```text

@@ -6,48 +6,83 @@
   <title>Recruiter screening queue</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/recruiter.css">
 </head>
-<body>
+<body class="recruiter-page">
   <main class="shell recruiter-shell" aria-labelledby="recruiter-title">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Internal review</p>
+    <header class="topbar recruiter-product-bar">
+      <div class="header-copy">
+        <div class="product-context">
+          <p class="product-name">Recruiter workspace</p>
+          <span class="product-separator" aria-hidden="true">/</span>
+          <p class="eyebrow">Internal review</p>
+        </div>
         <h1 id="recruiter-title">Screening queue</h1>
       </div>
       <a class="secondary link-button" href="/">Candidate view</a>
     </header>
-    <section class="notice"><strong>Recruiter-only view</strong><span>Use the configured internal API key. Review deterministic criteria and factual summaries; do not use protected characteristics.</span></section>
-    <form id="recruiter-form" class="inline-form">
-      <label for="internal-key">Internal API key</label>
-      <input id="internal-key" type="password" autocomplete="off" required>
-      <button type="submit">Load queue</button>
-    </form>
-    <p id="recruiter-status" role="status"></p>
-    <div class="review-layout">
-      <section id="queue" class="queue" aria-live="polite" aria-label="Screening queue"></section>
-      <aside id="detail" class="detail card" aria-live="polite" hidden>
-        <h2 id="detail-title">Screening details</h2>
-        <div id="detail-content"></div>
-        <button id="retry-summary" class="secondary" type="button" hidden>Retry summary</button>
-        <form id="review-form" class="review-form" hidden>
-          <h3>Record review</h3>
-          <label for="reviewer-id">Reviewer ID</label>
-          <input id="reviewer-id" maxlength="200" required>
-          <label for="review-decision">Review decision</label>
-          <select id="review-decision">
-            <option value="needs_review">Needs review</option>
-            <option value="advance">Advance</option>
-            <option value="reject">Reject</option>
-            <option value="qualified">Qualified</option>
-            <option value="disqualified">Disqualified</option>
-          </select>
-          <label for="review-notes">Notes</label>
-          <textarea id="review-notes" rows="3" maxlength="2000"></textarea>
-          <button type="submit">Save review</button>
-          <p id="review-status" role="status"></p>
-        </form>
-      </aside>
-    </div>
+
+    <section class="secure-access" aria-label="Secure recruiter access">
+      <div class="notice">
+        <span class="notice-mark" aria-hidden="true">i</span>
+        <div class="notice-copy">
+          <strong>Recruiter-only view</strong>
+          <span>Use the configured internal API key. Review deterministic criteria and factual summaries; do not use protected characteristics.</span>
+        </div>
+      </div>
+      <form id="recruiter-form" class="inline-form">
+        <label for="internal-key">Internal API key</label>
+        <input id="internal-key" type="password" autocomplete="off" required>
+        <button type="submit">Load queue</button>
+      </form>
+    </section>
+
+    <section class="recruiter-workspace" aria-labelledby="recruiter-title">
+      <p id="recruiter-status" role="status" aria-live="polite"></p>
+      <div class="queue-toolbar" aria-label="Screening filters">
+        <label for="status-filter">Filter by status</label>
+        <select id="status-filter" disabled>
+          <option value="">All statuses</option>
+          <option value="in_progress">In progress</option>
+          <option value="needs_review">Needs review</option>
+          <option value="qualified">Qualified</option>
+          <option value="disqualified">Disqualified</option>
+          <option value="abandoned">Abandoned</option>
+          <option value="unknown">Other statuses</option>
+        </select>
+      </div>
+      <div class="review-layout">
+        <section id="queue" class="queue" aria-live="polite" aria-label="Screening queue"></section>
+        <aside id="detail" class="detail card" aria-live="polite" hidden>
+          <header class="detail-header">
+            <div>
+              <p class="eyebrow">Candidate details</p>
+              <h2 id="detail-title">Screening details</h2>
+            </div>
+            <button id="close-detail" class="secondary detail-close" type="button" aria-label="Close candidate details">Close</button>
+          </header>
+          <div id="detail-content" class="detail-content"></div>
+          <button id="retry-summary" class="secondary" type="button" hidden>Retry summary</button>
+          <form id="review-form" class="review-form" aria-labelledby="review-heading" hidden>
+            <h3 id="review-heading">Record review</h3>
+            <label for="reviewer-id">Reviewer ID</label>
+            <input id="reviewer-id" maxlength="200" required>
+            <label for="review-decision">Review decision</label>
+            <select id="review-decision">
+              <option value="needs_review">Needs review</option>
+              <option value="advance">Advance</option>
+              <option value="reject">Reject</option>
+              <option value="qualified">Qualified</option>
+              <option value="disqualified">Disqualified</option>
+            </select>
+            <label for="review-notes">Notes</label>
+            <textarea id="review-notes" rows="3" maxlength="2000"></textarea>
+            <button type="submit">Save review</button>
+            <p id="review-status" role="status" aria-live="polite"></p>
+          </form>
+        </aside>
+      </div>
+    </section>
   </main>
   <script src="/static/recruiter.js" defer></script>
 </body>

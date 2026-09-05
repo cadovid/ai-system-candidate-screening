@@ -54,13 +54,23 @@ Troubleshooting: if the microphone is disabled, use a supported up-to-date brows
 
 ### Candidate chat experience
 
-The candidate view uses a focused, responsive chat surface with a restrained olive, sage, lime, and white visual language. Candidate-only styling is scoped to the candidate page so the recruiter view and shared screening behavior remain unchanged.
+The candidate and recruiter views use a shared focused, responsive visual system with a restrained olive, sage, lime, and white palette. Shared spacing, rounded surfaces, typography, focus treatments, status communication, and reduced-motion behavior keep the two experiences consistent while page-specific styling remains scoped to each view.
 
 The assistant is presented as **Olivia — AI Recruitment Assistant**. Assistant messages show Olivia’s name and avatar, while candidate messages use the stable localized label **You** / **Tú** throughout the conversation. The avatar is an original synthetic, human-style portrait stored as `static/images/olivia-avatar.webp`; it does not depict or imitate an identifiable person and is always paired with the explicit AI disclosure.
 
 When a candidate turn is being processed, the conversation inserts one temporary Olivia typing item (`...`, rendered as subtle three-dot animation). Its accessible status says that Olivia is responding. The item is replaced by the returned assistant message, or removed before the existing graceful error message is shown; it is never persisted as a candidate response. Enter submits the current answer, while Shift+Enter inserts a newline. Voice transcripts use the same editable composer, request path, state machine, and message renderer as typed answers.
 
 The layout adapts from a centered reading-width panel on desktop to a full-height, touch-friendly surface on mobile. Keyboard focus states, semantic controls, sender labels, accessible loading status, sufficient contrast, and reduced-motion behavior are part of the candidate UI; color alone is not used to identify the speaker.
+
+### Recruiter workspace
+
+The recruiter view at `/recruiter` is a responsive screening workspace built on the same visual language as the candidate chat. It begins with a secure access panel for the manually entered internal API key. The key remains a password field, is not persisted by the page, and continues to use the existing bearer authentication contract.
+
+After access is granted, the screening queue is presented as a status board with a column for each supported screening state. Each column has its own color treatment and count, and the status filter can narrow the board to one state while preserving the same API-backed data. Queue cards retain the candidate name, session metadata, summary, and existing detail action. On larger screens, the selected candidate’s detail panel sits beside the board; on smaller screens, it stacks below the board and is brought into view after selection. The detail panel can be closed to return to the full board. Presentation-only status badges make `qualified`, `needs_review`, `disqualified`, `in_progress`, and `abandoned` states easy to scan, with visible text and a neutral fallback for unknown statuses.
+
+Candidate details preserve the existing summary, status and handoff metadata, reason codes, missing fields, expandable rule trace, transcript, summary retry, and review form. Transcript entries are visually separated for the assistant and candidate using the shared chat palette. Existing queue/detail requests, API routes, request payloads, authentication, screening decisions, and review behavior are unchanged; this is a UX/UI redesign only.
+
+While the queue request is loading, the status filter is disabled; it becomes available only after a valid queue payload is rendered. The `No screenings yet` state is reserved for a successful response containing zero records, while an invalid or failed response is shown as an error. Both views retain keyboard navigation, semantic controls, visible focus states, sufficient contrast, accessible loading and status announcements, touch-friendly targets, and `prefers-reduced-motion` support. Status meaning is never communicated by color alone.
 
 ## Architecture
 
@@ -158,6 +168,8 @@ The separate conversation status is `active`, `completed`, or `opted_out`. A ter
 | `src/candidate_screening/api/` | Versioned candidate, internal/recruiter, analytics, health, auth, middleware, and HTTP DTOs. |
 | `src/candidate_screening/persistence/` | SQLAlchemy ORM, repositories, unit of work, and Alembic-compatible schema. |
 | `data/` | Fictional service areas, FAQ, sample transcripts, scenarios, and evaluation cases. |
+| `templates/` | Candidate and recruiter HTML shells, semantic controls, disclosures, and page structure. |
+| `static/` | Scoped candidate/recruiter styles, chat and voice modules, status-board behavior, icons, and the Olivia avatar. |
 | `scripts/run_evals.py` | Network-free deterministic runner and explicit live-evaluation runner. |
 | `scripts/reengage.py` | Dry-run-by-default bounded reminder job for inactive conversations. |
 | `docs/` | Architecture, process, responsible-AI notes, sample conversations, and production roadmap. |

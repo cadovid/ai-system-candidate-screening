@@ -7,11 +7,11 @@ This service is a deliberately small modular monolith. The modules have clear se
 ```mermaid
 flowchart TB
   subgraph Clients
-    TextUI[Candidate Text UI: textarea + Send]
+    TextUI[Candidate chat UI: composer + Olivia messages]
     VoiceControls[Candidate Voice controls]
     BrowserSTT[Browser SpeechRecognition / STT]
     BrowserTTS[Browser speechSynthesis / optional TTS]
-    Recruiter[Recruiter UI / internal client]
+    Recruiter[Recruiter status board / detail UI]
     VoiceControls -->|spoken input| BrowserSTT
     BrowserSTT -->|interim/final transcript| TextUI
     TextUI -->|typed or edited text + input_mode| Turns["POST /api/v1/candidate/conversations/{id}/turns"]
@@ -98,6 +98,14 @@ flowchart TB
 ```
 
 The candidate browser has one text composer and two optional voice adapters. Typed text, or a reviewed transcript produced by browser SpeechRecognition, is submitted to the same versioned `/turns` endpoint and enters the same coordinator/reconciliation/rules workflow; `input_mode` is provenance, not a different decision path. Assistant text is always rendered in the text UI, with optional browser `speechSynthesis` reading it aloud. Microphone audio is not sent to or persisted by this service. The separate server-side provider boundary is used only after guardrails, and Groq, OpenRouter, and OpenAI all feed the same typed interpreter contract.
+
+### Browser presentation surfaces
+
+The candidate surface is defined by [`templates/candidate.html`](../templates/candidate.html), [`static/candidate.css`](../static/candidate.css), [`static/candidate.mjs`](../static/candidate.mjs), and the shared [`static/chat-ui.mjs`](../static/chat-ui.mjs). It presents Olivia as an explicitly identified AI assistant, gives assistant and candidate messages stable sender identities, shows the synthetic Olivia avatar, inserts an accessible temporary typing indicator while a turn is processing, and keeps typed and voice-reviewed transcripts in the same composer and message renderer. Candidate styling is page-scoped so recruiter changes cannot blank or restyle the candidate chat.
+
+The recruiter surface is defined by [`templates/recruiter.html`](../templates/recruiter.html), [`static/recruiter.css`](../static/recruiter.css), and [`static/recruiter.js`](../static/recruiter.js). It keeps the existing internal-key and API contract but presents the queue as a responsive status board: supported statuses have distinct presentation tones and counts, the filter can show one status column, and the detail panel can be opened and closed without changing the selected screening. Queue loading and errors are explicit UI states: the filter remains disabled until a valid queue response is rendered, `No screenings yet` is shown only for a valid empty result, and malformed or failed responses are shown as errors. The detail view preserves the existing summary, deterministic reason trace, transcript, summary retry, and human-review form.
+
+These are presentation-layer changes only. Candidate turns, recruiter reads/reviews, persistence, screening state, deterministic qualification, provider selection, and API request/response contracts remain shared and unchanged. The page-specific stylesheets are intentionally scoped to `.candidate-page` and `.recruiter-page` so a redesign of one surface cannot regress the other.
 
 ### HTTP and security boundary
 
