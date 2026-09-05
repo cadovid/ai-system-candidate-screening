@@ -85,7 +85,7 @@ async def test_simple_ack_and_name_answers_advance_without_an_empty_model_patch(
     assert acknowledged.next_field == "full_name"
     assert "nombre completo" in acknowledged.assistant_message
 
-    answered = await coordinator.process_turn(created.conversation_id, "Maria Pineda", "name")
+    answered = await coordinator.process_turn(created.conversation_id, "Laura Pineda", "name")
     assert answered.screening_status is ScreeningStatus.IN_PROGRESS
     assert answered.next_field == "drivers_license"
     assert "licencia" in answered.assistant_message
@@ -96,7 +96,7 @@ async def test_simple_ack_and_name_answers_advance_without_an_empty_model_patch(
     view = await coordinator.get_conversation(created.conversation_id)
     assert view.state.disclosure_acknowledged is True
     assert view.state.full_name is not None
-    assert view.state.full_name.value == "Maria Pineda"
+    assert view.state.full_name.value == "Laura Pineda"
 
 
 @pytest.mark.asyncio
@@ -114,7 +114,7 @@ async def test_name_answer_repairs_legacy_missing_disclosure_state(
     # bug: the controller had already asked for the name, but the disclosure
     # acknowledgement flag was still false.
     answered = await coordinator.process_turn(
-        created.conversation_id, "Maria Pineda", "legacy-name"
+        created.conversation_id, "Laura Pineda", "legacy-name"
     )
 
     assert answered.next_field == "drivers_license"
@@ -123,7 +123,7 @@ async def test_name_answer_repairs_legacy_missing_disclosure_state(
     view = await coordinator.get_conversation(created.conversation_id)
     assert view.state.disclosure_acknowledged is True
     assert view.state.full_name is not None
-    assert view.state.full_name.value == "Maria Pineda"
+    assert view.state.full_name.value == "Laura Pineda"
 
 
 @pytest.mark.asyncio
@@ -142,14 +142,14 @@ async def test_affirmative_after_direct_name_answers_active_license_question(
     # The provider recognizes the name but does not emit a disclosure flag,
     # which is the persisted state that exposed the production loop.
     interpreter = QueueInterpreter(
-        [TurnInterpretation(full_name=ExtractedValue(value="Maria Pineda", provided=True))]
+        [TurnInterpretation(full_name=ExtractedValue(value="Laura Pineda", provided=True))]
     )
     coordinator = build(interpreter)
     created = await coordinator.create_conversation(language=language)
 
     # Lowercase formatting deliberately keeps this test on the model path so
     # it continues to model a provider response that omits disclosure.
-    name_result = await coordinator.process_turn(created.conversation_id, "maria pineda", "name")
+    name_result = await coordinator.process_turn(created.conversation_id, "laura pineda", "name")
     assert name_result.next_field == "drivers_license"
 
     license_result = await coordinator.process_turn(created.conversation_id, affirmative, "license")

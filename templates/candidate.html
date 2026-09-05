@@ -6,13 +6,14 @@
   <title>Delivery driver screening</title>
   <link rel="icon" href="/favicon.ico" type="image/svg+xml">
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/candidate.css">
 </head>
-<body>
-  <main class="shell" aria-labelledby="page-title">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow" data-i18n="eyebrow">Candidate screening</p>
-        <h1 id="page-title" data-i18n="title">Delivery driver application</h1>
+<body class="candidate-page">
+  <main class="shell candidate-shell" aria-labelledby="page-title">
+    <header class="candidate-product-bar topbar">
+      <div class="product-context">
+        <p class="product-name" data-i18n="eyebrow">Candidate screening</p>
+        <h1 id="page-title" class="sr-only" data-i18n="title">Delivery driver application</h1>
       </div>
       <label class="language"><span data-i18n="language_label">Idioma</span>
         <select id="language" aria-label="Language" data-i18n-aria-label="language_label">
@@ -21,28 +22,63 @@
         </select>
       </label>
     </header>
-    <section class="notice" aria-label="Disclosure" data-i18n-aria-label="disclosure_label">
-      <strong data-i18n="assistant">Automated assistant</strong>
-      <span data-i18n="disclosure">This chat collects job-related details for recruiter review. You can stop at any time. Do not share passwords, payment details, contact details, or government ID.</span>
+
+    <section class="candidate-panel" aria-labelledby="assistant-name">
+      <header class="assistant-header">
+        <div class="assistant-identity">
+          <span class="assistant-avatar-wrap">
+            <span class="assistant-avatar-fallback" aria-hidden="true">O</span>
+            <img class="assistant-avatar" src="/static/images/olivia-avatar.webp" alt="Olivia, AI Recruitment Assistant" data-i18n-alt="assistant" onerror="this.hidden = true">
+          </span>
+          <div class="assistant-heading">
+            <h2 id="assistant-name">Olivia</h2>
+            <p class="assistant-role" data-i18n="assistant">Automated assistant</p>
+            <p class="assistant-presence" data-i18n-presence="online"><span class="presence-dot" aria-hidden="true"></span><span>Online</span></p>
+          </div>
+        </div>
+        <span class="assistant-disclosure" data-i18n="assistant">Automated assistant</span>
+      </header>
+
+      <div class="notice" aria-label="Disclosure" data-i18n-aria-label="disclosure_label">
+        <span class="notice-mark" aria-hidden="true">i</span>
+        <div class="notice-copy">
+          <strong data-i18n="assistant">Automated assistant</strong>
+          <span data-i18n="disclosure">This chat collects job-related details for recruiter review. You can stop at any time. Do not share passwords, payment details, contact details, or government ID.</span>
+        </div>
+      </div>
+
+      <section id="chat" class="chat" role="log" aria-live="polite" aria-label="Conversation" data-i18n-aria-label="conversation_label"></section>
+
+      <footer class="candidate-composer-area">
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message" data-i18n="message_label">Your message</label>
+          <div class="composer-input-wrap">
+            <textarea id="message" rows="1" maxlength="2000" data-i18n-placeholder="message_placeholder" placeholder="Escribe tu respuesta…" required></textarea>
+          </div>
+          <button type="button" id="microphone" class="voice-button icon-button" aria-pressed="false" aria-busy="false" title="Speak">
+            <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 15.5a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v6a3.5 3.5 0 0 0 3.5 3.5Z"/><path d="M18.5 11.5a6.5 6.5 0 0 1-13 0M12 18v3M8.5 21h7"/></svg>
+            <span class="button-label" data-i18n="speak">Hablar</span>
+          </button>
+          <button type="submit" id="send" class="send-button icon-button">
+            <span class="button-label" data-i18n="send">Enviar</span>
+            <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m4 4 16 8-16 8 3.5-8L4 4Z"/><path d="M7.5 12H20"/></svg>
+          </button>
+        </form>
+
+        <p id="interim-transcript" class="interim-transcript" aria-live="polite" hidden></p>
+        <div class="voice-actions">
+          <button id="stop-listening" class="secondary" type="button" data-i18n="stop_listening" hidden>Terminar</button>
+          <button id="cancel-listening" class="secondary" type="button" data-i18n="cancel_listening" hidden>Cancelar</button>
+          <label class="read-aloud"><input id="read-aloud" type="checkbox"> <span data-i18n="read_aloud">Leer respuestas en voz alta</span></label>
+          <button id="stop-audio" class="secondary" type="button" data-i18n="stop_audio" hidden>Parar audio</button>
+        </div>
+      </footer>
     </section>
-    <section id="chat" class="chat" aria-live="polite" aria-label="Conversation" data-i18n-aria-label="conversation_label"></section>
-    <form id="chat-form" class="composer">
-      <label class="sr-only" for="message" data-i18n="message_label">Your message</label>
-      <textarea id="message" rows="2" maxlength="2000" data-i18n-placeholder="message_placeholder" placeholder="Escribe tu respuesta…" required></textarea>
-      <button type="button" id="microphone" class="voice-button" aria-pressed="false" aria-busy="false" data-i18n="speak">Hablar</button>
-      <button type="submit" id="send" data-i18n="send">Enviar</button>
-    </form>
-    <p id="interim-transcript" class="interim-transcript" aria-live="polite" hidden></p>
-    <div class="voice-actions">
-      <button id="stop-listening" class="secondary" type="button" data-i18n="stop_listening" hidden>Terminar</button>
-      <button id="cancel-listening" class="secondary" type="button" data-i18n="cancel_listening" hidden>Cancelar</button>
-      <label class="read-aloud"><input id="read-aloud" type="checkbox"> <span data-i18n="read_aloud">Leer respuestas en voz alta</span></label>
-      <button id="stop-audio" class="secondary" type="button" data-i18n="stop_audio" hidden>Parar audio</button>
-    </div>
+
     <div class="actions">
       <button id="new-chat" class="secondary" type="button" data-i18n="new_chat">Empezar de nuevo</button>
       <button id="stop-chat" class="secondary" type="button" data-i18n="stop_chat">Parar / salir</button>
-      <span id="status" role="status"></span>
+      <span id="status" role="status" aria-live="polite"></span>
     </div>
     <p class="fineprint" data-i18n="fineprint">A recruiter reviews screening information. The assistant does not make a subjective hiring decision.</p>
     <p class="fineprint" data-i18n="voice_privacy">El reconocimiento de voz puede ser procesado por el proveedor de tu navegador. Esta aplicación no recibe ni almacena el audio. Revisa la transcripción antes de enviarla.</p>

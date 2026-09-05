@@ -1,4 +1,13 @@
 import { VoiceController, VoiceState } from "./voice.mjs";
+import {
+  DEFAULT_AVATAR_SRC,
+  appendMessage,
+  localizeMessageIdentities,
+  removeTypingIndicator,
+  replaceTypingIndicator,
+  showTypingIndicator,
+  scrollToLatest,
+} from "./chat-ui.mjs";
 
 const chat = document.getElementById("chat");
 const form = document.getElementById("chat-form");
@@ -14,6 +23,7 @@ const interim = document.getElementById("interim-transcript");
 const readAloud = document.getElementById("read-aloud");
 const stopAudio = document.getElementById("stop-audio");
 const newChat = document.getElementById("new-chat");
+const candidatePage = document.querySelector(".candidate-page") || document.body;
 const sessionKey = "candidate-screening-session";
 let session = null;
 let busy = false;
@@ -24,7 +34,9 @@ let pendingTurn = null;
 const copy = {
   en: {
     eyebrow: "Candidate screening", title: "Delivery driver application", language_label: "Language",
-    assistant: "Automated assistant", disclosure_label: "Disclosure",
+    assistant: "AI Recruitment Assistant", assistant_name: "Olivia", assistant_subtitle: "AI Recruitment Assistant",
+    assistant_online: "Online", online: "Online", assistant_avatar_alt: "Olivia, AI Recruitment Assistant", user_identity: "You",
+    typing: "Olivia is responding.", disclosure_label: "Disclosure",
     disclosure: "This chat collects job-related details for recruiter review. You can stop at any time. Do not share passwords, payment details, contact details, or government ID.",
     conversation_label: "Conversation", message_label: "Your message", message_placeholder: "Write your answer…",
     send: "Send", speak: "Speak", stop_listening: "Finish", cancel_listening: "Cancel",
@@ -45,7 +57,9 @@ const copy = {
   },
   es: {
     eyebrow: "Evaluación de candidatura", title: "Solicitud de repartidor/a", language_label: "Idioma",
-    assistant: "Asistente automatizado", disclosure_label: "Información",
+    assistant: "Asistente de reclutamiento con IA", assistant_name: "Olivia", assistant_subtitle: "Asistente de reclutamiento con IA",
+    assistant_online: "En línea", online: "En línea", assistant_avatar_alt: "Olivia, asistente de reclutamiento con IA", user_identity: "Tú",
+    typing: "Olivia está respondiendo.", disclosure_label: "Información",
     disclosure: "Este chat recoge datos relacionados con el trabajo para que los revise una persona reclutadora. Puedes parar cuando quieras. No compartas contraseñas, datos de pago, datos de contacto ni documentos de identidad.",
     conversation_label: "Conversación", message_label: "Tu mensaje", message_placeholder: "Escribe tu respuesta…",
     send: "Enviar", speak: "Hablar", stop_listening: "Terminar", cancel_listening: "Cancelar",
@@ -81,14 +95,73 @@ function applyChromeLanguage(nextLanguage) {
   for (const element of document.querySelectorAll("[data-i18n-aria-label]")) {
     if (element.dataset.i18nAriaLabel) element.setAttribute("aria-label", translate(element.dataset.i18nAriaLabel));
   }
+  for (const element of document.querySelectorAll("[data-i18n-alt]")) {
+    if (element.dataset.i18nAlt) {
+      const key = element.dataset.i18nAlt === "assistant" ? "assistant_avatar_alt" : element.dataset.i18nAlt;
+      element.setAttribute("alt", translate(key));
+    }
+  }
+  for (const element of document.querySelectorAll("[data-i18n-presence]")) {
+    if (!element.dataset.i18nPresence) continue;
+    const label = element.lastElementChild || element;
+    label.textContent = translate(element.dataset.i18nPresence);
+  }
+  localizeMessageIdentities(chat, {
+    assistantName: translate("assistant_name"),
+    assistantSubtitle: translate("assistant_subtitle"),
+    assistantAlt: translate("assistant_avatar_alt"),
+    userName: translate("user_identity"),
+  });
 }
 
-function addBubble(text, role) {
-  const bubble = document.createElement("div");
-  bubble.className = `bubble ${role}`;
-  bubble.textContent = text;
-  chat.appendChild(bubble);
-  chat.scrollTop = chat.scrollHeight;
+function addBubble(text, role, { forceScroll = false, forceNewGroup = false } = {}) {
+  return appendMessage(chat, text, role, {
+    assistantName: translate("assistant_name"),
+    assistantSubtitle: translate("assistant_subtitle"),
+    assistantAlt: translate("assistant_avatar_alt"),
+    userName: translate("user_identity"),
+    avatarSrc: DEFAULT_AVATAR_SRC,
+    forceScroll,
+    forceNewGroup,
+  });
+}
+
+function showPendingAssistant({ forceScroll = true } = {}) {
+  return showTypingIndicator(chat, {
+    assistantName: translate("assistant_name"),
+    assistantSubtitle: translate("assistant_subtitle"),
+    assistantAlt: translate("assistant_avatar_alt"),
+    avatarSrc: DEFAULT_AVATAR_SRC,
+    typingLabel: translate("typing"),
+    forceScroll,
+  });
+}
+
+function replacePendingAssistant(text, { forceScroll = false } = {}) {
+  return replaceTypingIndicator(chat, text, { forceScroll });
+}
+
+function resizeMessage() {
+  if (!message?.style) return;
+  message.style.height = "auto";
+  const maxHeight = 140;
+  const nextHeight = Math.min(Math.max(message.scrollHeight || 0, 48), maxHeight);
+  message.style.height = `${nextHeight}px`;
+  message.style.overflowY = (message.scrollHeight || 0) > maxHeight ? "auto" : "hidden";
+}
+
+function setVoiceStateClass(state) {
+  const stateClasses = Object.values(VoiceState).map((value) => `voice-state-${value}`);
+  const visualState = state === VoiceState.REQUESTING_PERMISSION ? "requesting" : state;
+  for (const element of [candidatePage, microphone]) {
+    if (!element?.classList) continue;
+    for (const className of stateClasses) element.classList.remove(className);
+    element.classList.add(`voice-state-${state}`, `voice-state-${visualState}`);
+    if (element.dataset) {
+      element.dataset.voiceState = visualState;
+      element.dataset.voiceStateRaw = state;
+    }
+  }
 }
 
 function idempotencyKey() {
@@ -127,9 +200,10 @@ const voice = new VoiceController({
   Utterance: browser.SpeechSynthesisUtterance,
   getLanguage: currentLanguage,
   onInterim: (text) => { interim.textContent = text; interim.hidden = !text; },
-  onFinal: (text) => { message.value = text; draftMode = "voice"; interim.textContent = ""; interim.hidden = true; message.focus(); },
+  onFinal: (text) => { message.value = text; draftMode = "voice"; interim.textContent = ""; interim.hidden = true; resizeMessage(); message.focus(); },
   onError: (code) => { status.textContent = translate(voiceErrorKey(code)); },
   onState: (state) => {
+    setVoiceStateClass(state);
     const active = [VoiceState.REQUESTING_PERMISSION, VoiceState.LISTENING, VoiceState.TRANSCRIBING].includes(state);
     stopListening.hidden = !active;
     cancelListening.hidden = !active;
@@ -145,6 +219,7 @@ const voice = new VoiceController({
     } else if (state === VoiceState.UNSUPPORTED && !busy && !terminal) {
       status.textContent = translate("unsupported");
     }
+    resizeMessage();
   },
 });
 
@@ -177,7 +252,7 @@ function isTerminal(data) {
 
 async function start() {
   if (busy) return;
-  busy = true; terminal = false; setControls(); chat.replaceChildren(); status.textContent = translate("starting");
+  busy = true; terminal = false; setControls(); removeTypingIndicator(chat); chat.replaceChildren(); status.textContent = translate("starting");
   try {
     const response = await fetch("/api/v1/candidate/conversations", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -187,7 +262,7 @@ async function start() {
     session = await response.json();
     pendingTurn = null;
     localStorage.setItem(sessionKey, JSON.stringify(session));
-    applyChromeLanguage(session.language); addBubble(session.assistant_message, "assistant");
+    applyChromeLanguage(session.language); addBubble(session.assistant_message, "assistant", { forceScroll: true, forceNewGroup: true });
     status.textContent = voice.supported ? "" : translate("unsupported");
   } finally { busy = false; setControls(); message.focus(); }
 }
@@ -201,9 +276,10 @@ async function restore() {
       headers: { Authorization: `Bearer ${session.resume_token}` },
     });
     if (!response.ok) throw new Error("restore_failed");
-    const view = await response.json(); chat.replaceChildren();
+    const view = await response.json(); removeTypingIndicator(chat); chat.replaceChildren();
     for (const item of view.messages || []) addBubble(item.content, item.direction === "user" ? "user" : "assistant");
-    applyChromeLanguage(view.language); setTerminal(view.status === "completed" || view.status === "opted_out", view.status === "opted_out");
+    applyChromeLanguage(view.language); scrollToLatest(chat, { force: true });
+    setTerminal(view.status === "completed" || view.status === "opted_out", view.status === "opted_out");
   } catch (_error) { localStorage.removeItem(sessionKey); return start(); }
 }
 
@@ -212,14 +288,19 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
   const requestMessage = content.trim();
   const pending = pendingTurnFor(requestMessage);
   if (!pending.bubbleAdded) {
-    addBubble(requestMessage, "user");
+    // The candidate just acted, so the latest interaction should remain
+    // visible even when the transcript was already scrolled near its end.
+    addBubble(requestMessage, "user", { forceScroll: true });
     pending.bubbleAdded = true;
   }
+  showPendingAssistant({ forceScroll: true });
   message.value = "";
+  resizeMessage();
   draftMode = "text";
   busy = true; voice.setProcessing(true); status.textContent = translate("sending"); setControls();
   let replyToSpeak = null;
   let retryMessage = null;
+  let assistantMessageDisplayed = false;
   try {
     const response = await fetch(`/api/v1/candidate/conversations/${encodeURIComponent(session.conversation_id)}/turns`, {
       method: "POST",
@@ -228,11 +309,13 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
     });
     const data = await response.json().catch(() => ({}));
     if (data.assistant_message && pending.responseTurnId !== data.turn_id) {
-      addBubble(data.assistant_message, "assistant");
+      replacePendingAssistant(data.assistant_message);
+      assistantMessageDisplayed = true;
       pending.responseTurnId = data.turn_id || "displayed";
     }
     if (!response.ok) {
       retryMessage = data.error?.message || data.assistant_message || translate("try_again");
+      if (!assistantMessageDisplayed) replacePendingAssistant(retryMessage);
       // A failed turn is already durably recorded by the API. Retrying it
       // with the same key would only replay that failure, so let the next
       // deliberate submit receive a fresh key. If no turn ID was returned,
@@ -248,7 +331,12 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
     }
   } catch (_error) {
     retryMessage = translate("connection");
+    replacePendingAssistant(retryMessage);
   } finally {
+    // The cleanup is intentionally defensive: every request path must leave
+    // no pending item behind, including malformed responses and exceptions
+    // thrown before fetch reaches the network.
+    removeTypingIndicator(chat);
     busy = false;
     voice.setProcessing(false);
     setControls();
@@ -256,6 +344,7 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
       status.textContent = retryMessage;
       message.value = requestMessage;
       draftMode = inputMode;
+      resizeMessage();
     }
     if (replyToSpeak) voice.speak(replyToSpeak, currentLanguage());
     if (!terminal) {
@@ -265,7 +354,12 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
 }
 
 form.addEventListener("submit", (event) => { event.preventDefault(); void sendTurn(message.value, null, draftMode); });
-message.addEventListener("input", () => { if (!message.value.trim()) draftMode = "text"; });
+message.addEventListener("input", () => { if (!message.value.trim()) draftMode = "text"; resizeMessage(); });
+message.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  if (!busy && !terminal) void sendTurn(message.value, null, draftMode);
+});
 microphone.addEventListener("click", () => voice.start());
 stopListening.addEventListener("click", () => voice.stop());
 cancelListening.addEventListener("click", () => voice.abort());
@@ -286,6 +380,7 @@ newChat.addEventListener("click", () => {
 stop.addEventListener("click", () => { void sendTurn(currentLanguage() === "en" ? "I want to stop" : "Quiero parar"); });
 
 applyChromeLanguage(language.value);
+resizeMessage();
 setControls();
 if (!voice.supported) status.textContent = translate("unsupported");
 void restore().catch(() => { status.textContent = translate("start_failed"); });
