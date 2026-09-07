@@ -16,7 +16,7 @@ from dataclasses import replace
 from typing import Any, cast
 
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.settings import ModelSettings
@@ -426,10 +426,12 @@ class GroqNativeModel(GroqModel):
         """Turn Groq native JSON validation failures into output retries.
 
         Groq reports malformed native JSON as HTTP 400 rather than returning a
-        response for Pydantic AI to validate.  Returning an empty response
-        keeps the failure on Pydantic AI's normal bounded output-retry path.
-        Only the exact native-output error is adapted; all other provider
-        failures retain the base Groq model behavior.
+        response for Pydantic AI to validate.  A safe synthetic invalid object
+        lets Pydantic AI generate its normal schema-specific retry prompt.  An
+        empty response would only retry the same request and can reproduce the
+        same provider failure indefinitely.  Provider error text and failed
+        generations are deliberately not forwarded.  Only the exact native-
+        output error is adapted; all other failures retain the base behavior.
         """
 
         try:
@@ -437,7 +439,11 @@ class GroqNativeModel(GroqModel):
         except ModelHTTPError as exc:
             if model_request_parameters.output_mode == "native" and _is_json_validate_failed(exc):
                 return ModelResponse(
-                    parts=[],
+                    # This mirrors the provider failure's structural class
+                    # without exposing its untrusted failed generation. Unlike
+                    # an empty object (whose schema fields have application
+                    # defaults), it forces a useful Pydantic retry instruction.
+                    parts=[TextPart(content='{"candidate_questions":null}')],
                     model_name=exc.model_name,
                     provider_name=self._provider.name,
                     provider_url=self.base_url,

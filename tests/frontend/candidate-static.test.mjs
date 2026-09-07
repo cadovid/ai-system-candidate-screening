@@ -47,3 +47,12 @@ test("successful in-progress turns are not treated as terminal conversations", a
     /\["qualified", "disqualified", "needs_review", "abandoned"\]\.includes\(data\.screening_status\)/,
   );
 });
+
+test("successful text and voice turns share a bounded typing affordance", async () => {
+  const candidate = await readFile(new URL("static/candidate.mjs", root), "utf8");
+  assert.match(candidate, /waitForMinimumTypingDuration/);
+  assert.match(candidate, /const typingStartedAt = Date\.now\(\)/);
+  assert.match(candidate, /if \(!response\.ok\)[\s\S]*?Errors are actionable immediately/);
+  assert.match(candidate, /else \{[\s\S]*?await waitForMinimumTypingDuration\(typingStartedAt\)/);
+  assert.match(candidate, /input_mode: inputMode/);
+});

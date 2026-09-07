@@ -9,6 +9,7 @@ import {
   replaceTypingIndicator,
   scrollToLatest,
   showTypingIndicator,
+  waitForMinimumTypingDuration,
 } from "../../static/chat-ui.mjs";
 
 class FakeClassList {
@@ -209,4 +210,28 @@ test("scroll helpers honor intentional upward reading and forced new turns", () 
   assert.equal(scrollToLatest(container, { force: true }), true);
   assert.equal(container.scrollTop, 1000);
   assert.equal(isNearBottom(container), true);
+});
+
+test("successful fast replies wait only for the remaining injected minimum", async () => {
+  const waits = [];
+  const waited = await waitForMinimumTypingDuration(1000, {
+    minimumMs: 360,
+    now: () => 1250,
+    delay: async (duration) => { waits.push(duration); },
+  });
+
+  assert.equal(waited, 110);
+  assert.deepEqual(waits, [110]);
+});
+
+test("slow successful replies add no delay", async () => {
+  const waits = [];
+  const waited = await waitForMinimumTypingDuration(1000, {
+    minimumMs: 360,
+    now: () => 1400,
+    delay: async (duration) => { waits.push(duration); },
+  });
+
+  assert.equal(waited, 0);
+  assert.deepEqual(waits, []);
 });

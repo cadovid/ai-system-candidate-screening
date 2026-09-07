@@ -2,21 +2,22 @@
 
 The language model remains responsible for open-ended natural-language
 understanding. This module handles only inputs whose meaning is sufficiently
-closed and auditable to process without a provider call: control replies,
-explicit language changes, exact catalogue locations, obvious questions, and
-labelled multi-field answers. It returns the same typed patch consumed by the
+closed and auditable to process without a provider call: exact control replies,
+explicit language changes, exact catalogue locations, and an explicitly
+prefixed name. Compound answers, corrections, questions, and other prose stay
+on the semantic model path. It returns the same typed patch consumed by the
 normal workflow.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import replace
 from typing import Any, cast
 
 from candidate_screening.ai.interpreter import InterpreterResult
 from candidate_screening.ai.schemas import (
-    ExtractedDeliveryExperience,
     ExtractedLocation,
     ExtractedValue,
     StartAvailabilityExtraction,
@@ -38,7 +39,7 @@ from candidate_screening.domain.service_areas import (
     normalize_location,
 )
 
-_YES_VALUES = frozenset({"yes", "y", "sí", "si", "true", "correct", "correcto", "vale"})
+_YES_VALUES = frozenset({"yes", "y", "si", "true", "correct", "correcto", "vale"})
 _NO_VALUES = frozenset({"no", "n", "false", "nope"})
 _LICENSE_VALUES: dict[str, bool] = {
     **{value: True for value in _YES_VALUES},
@@ -48,32 +49,46 @@ _DISCLOSURE_ACKNOWLEDGEMENTS = frozenset(
     {
         "yes",
         "y",
-        "sí",
         "si",
-        "yes please",
-        "sí por favor",
-        "si por favor",
         "sure",
         "okay",
         "ok",
         "vale",
-        "de acuerdo",
         "adelante",
-        "go on",
         "go ahead",
+        "let s go",
+        "lets go",
         "continue",
-        "let's continue",
-        "lets continue",
         "start",
-        "start please",
         "empecemos",
-        "empecemos por favor",
         "empezamos",
         "comencemos",
         "continuar",
-        "continuemos",
     }
 )
+
+_EXACT_AVAILABILITY: dict[str, AvailabilityType] = {
+    "full time": AvailabilityType.FULL_TIME,
+    "part time": AvailabilityType.PART_TIME,
+    "weekend": AvailabilityType.WEEKENDS,
+    "weekends": AvailabilityType.WEEKENDS,
+    "tiempo completo": AvailabilityType.FULL_TIME,
+    "jornada completa": AvailabilityType.FULL_TIME,
+    "tiempo parcial": AvailabilityType.PART_TIME,
+    "media jornada": AvailabilityType.PART_TIME,
+    "fin de semana": AvailabilityType.WEEKENDS,
+    "fines de semana": AvailabilityType.WEEKENDS,
+}
+_EXACT_SCHEDULE: dict[str, SchedulePreference] = {
+    "morning": SchedulePreference.MORNING,
+    "afternoon": SchedulePreference.AFTERNOON,
+    "evening": SchedulePreference.EVENING,
+    "flexible": SchedulePreference.FLEXIBLE,
+    "manana": SchedulePreference.MORNING,
+    "tarde": SchedulePreference.AFTERNOON,
+    "noche": SchedulePreference.EVENING,
+}
+_EXACT_OPT_OUT = frozenset({"stop", "quit", "cancel", "parar", "salir", "terminar"})
 _NAME_PREFIX = re.compile(
     r"^(?:my\s+full\s+name\s+is|my\s+name\s+is|name\s+is|i\s+am|"
     r"i['’]?m|me\s+llamo|mi\s+nombre\s+es)\s+(.+?)\s*[.!?]?$",
@@ -171,13 +186,21 @@ _ENGLISH_AUXILIARY_QUESTION = re.compile(
     r"(?:i|we|you|he|she|they|it|this|that|these|those|there|the|a|an)\b",
     re.IGNORECASE,
 )
-_OFF_TOPIC_WORDS = frozenset(
-    {"joke", "weather", "favorite", "politics", "hobby", "meaning", "chiste"}
-)
 
 
 def _normalize(message: str) -> str:
-    normalized = re.sub(r"[.,!?;:¡¿]+", " ", message.casefold())
+    """Normalize only syntax that cannot change a closed control reply.
+
+    Control fast paths compare the resulting whole phrase, never individual
+    words.  Folding accents and Unicode hyphens makes ``sí``, ``si!`` and
+    ``go-ahead`` equivalent while keeping natural sentences outside the
+    closed vocabulary.
+    """
+
+    decomposed = unicodedata.normalize("NFKD", message.casefold())
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    normalized = re.sub(r"[-‐‑‒–—]+", " ", without_marks)
+    normalized = re.sub(r"[^\w\s]+", " ", normalized, flags=re.UNICODE)
     return " ".join(normalized.split())
 
 
@@ -186,21 +209,46 @@ def _words(message: str) -> set[str]:
 
 
 def _yes_no(message: str) -> bool | None:
-    words = _words(message)
-    has_yes = bool(words & _YES_VALUES)
-    has_no = bool(words & _NO_VALUES)
-    if has_yes == has_no:
-        return None
-    return has_yes
+    """Return a boolean only for an exact canonical control response."""
+
+    normalized = _normalize(message)
+    if normalized in _YES_VALUES:
+        return True
+    if normalized in _NO_VALUES:
+        return False
+    return None
 
 
 def _explicit_language(message: str) -> Language | None:
-    lowered = message.casefold()
-    if re.search(r"\b(?:english|inglés|ingles|in english|en inglés|en ingles)\b", lowered):
+    normalized = _normalize(message)
+    if normalized in {"english", "ingles"}:
         return Language.EN
-    if re.search(r"\b(?:spanish|español|espanol|in spanish|en español|en espanol)\b", lowered):
+    if normalized in {"spanish", "espanol"}:
         return Language.ES
+    language_only = re.fullmatch(r"(?:in|en) (english|ingles|spanish|espanol)", normalized)
+    if language_only is not None:
+        return Language.EN if language_only.group(1) in {"english", "ingles"} else Language.ES
+    command = re.fullmatch(
+        r"(?:(?:please|por favor) )?(?:continue|continua|speak|habla|respond|responde|reply|use|usa)"
+        r"(?: in| en| using| usando)? (english|ingles|spanish|espanol)",
+        normalized,
+    )
+    if command is not None:
+        return Language.EN if command.group(1) in {"english", "ingles"} else Language.ES
     return None
+
+
+def _is_disclosure_acknowledgement(message: str) -> bool:
+    """Recognize a short acknowledgement without maintaining phrase variants."""
+
+    normalized = _normalize(message)
+    if normalized in _DISCLOSURE_ACKNOWLEDGEMENTS:
+        return True
+    # Politeness markers are syntax, not additional semantic answers.  Keep
+    # the base vocabulary small so phrases such as ``Yep`` or ``I agree`` stay
+    # with the semantic interpreter.
+    match = re.fullmatch(r"(?:please )?(.+?)(?: please| por favor)?", normalized)
+    return bool(match and match.group(1) in _DISCLOSURE_ACKNOWLEDGEMENTS)
 
 
 def _language_for_message(message: str, state: ScreeningState) -> Language:
@@ -296,118 +344,20 @@ def _simple_name(value: str) -> str | None:
 
 
 def _bare_name(value: str) -> str | None:
-    """Accept only a title-cased, alphabetic name-shaped answer."""
+    """Accept only a short, title-cased, alphabetic name-shaped answer.
+
+    Bare names are safe to recover while the full-name field is active because
+    the parser requires a proper-name shape. Lowercase prose, one-word
+    replies, labels, and compound turns remain on the semantic model path.
+    """
 
     candidate = " ".join(value.split()).strip(" .,!?;:¡¿")
     words = candidate.split()
     if not 2 <= len(words) <= 6:
         return None
-    if any(not word[0].isupper() for word in words):
+    if any(not word or not word[0].isupper() for word in words):
         return None
     return _simple_name(candidate)
-
-
-def _label_value(message: str, labels: str) -> str | None:
-    match = re.search(
-        rf"(?:^|[;,|])\s*(?:{labels})\s*(?:is|es|=|:)\s*([^,;|]+)",
-        message,
-        re.IGNORECASE,
-    )
-    if match is None:
-        match = re.search(
-            rf"\b(?:{labels})\s*(?:is|es|=|:)\s*([^,;|]+)",
-            message,
-            re.IGNORECASE,
-        )
-    return _extract_name(match.group(1)) if match else None
-
-
-def _availability_value(value: str) -> list[AvailabilityType]:
-    words = _words(value)
-    result: list[AvailabilityType] = []
-    if "full" in words or "completo" in words or "completa" in words:
-        result.append(AvailabilityType.FULL_TIME)
-    if "part" in words or "parcial" in words:
-        result.append(AvailabilityType.PART_TIME)
-    if "weekend" in words or "weekends" in words or "fin" in words or "semana" in words:
-        result.append(AvailabilityType.WEEKENDS)
-    return list(dict.fromkeys(result))
-
-
-def _schedule_value(value: str) -> SchedulePreference | None:
-    words = _words(value)
-    if "morning" in words or "mañana" in words:
-        return SchedulePreference.MORNING
-    if "afternoon" in words or "tarde" in words:
-        return SchedulePreference.AFTERNOON
-    if "evening" in words or "night" in words or "noche" in words:
-        return SchedulePreference.EVENING
-    if "flexible" in words:
-        return SchedulePreference.FLEXIBLE
-    return None
-
-
-def _experience_value(value: str) -> ExtractedDeliveryExperience:
-    match = re.search(r"(?:^|\D)(\d+(?:[.,]\d+)?)\s*(?:years?|años?)?", value, re.IGNORECASE)
-    years = float(match.group(1).replace(",", ".")) if match else None
-    lowered = value.casefold()
-    platforms = [
-        platform
-        for platform in ("Glovo", "Uber Eats", "Deliveroo")
-        if platform.casefold() in lowered
-    ]
-    return ExtractedDeliveryExperience(
-        years=years,
-        platforms=platforms,
-        provided=years is not None,
-        evidence=value[:500],
-    )
-
-
-def _start_value(value: str) -> StartAvailabilityExtraction:
-    words = _words(value)
-    precision = "unknown"
-    if words & {"asap", "ahora", "ya"} or "lo antes posible" in value.casefold():
-        precision = "asap"
-    elif "week" in words or "semana" in words:
-        precision = "week"
-    elif "month" in words or "mes" in words:
-        precision = "month"
-    return StartAvailabilityExtraction(
-        raw_value=value.strip(),
-        precision=precision,
-        provided=bool(value.strip()),
-        evidence=value[:500],
-    )
-
-
-def _correction_requested(message: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(?:actually|instead|correction|correct(?:ion)?|change|update|"
-            r"me equivoqué|quise decir|en realidad)\b",
-            message,
-            re.IGNORECASE,
-        )
-    )
-
-
-def _question_or_off_topic(message: str, state: ScreeningState) -> TurnInterpretation | None:
-    lowered = message.casefold().strip().lstrip("¿¡ \t")
-    words = _words(message)
-    if _looks_like_question(message, lowered=lowered):
-        common = _base(message, state)
-        common.update(
-            intent=TurnIntent.QUESTION,
-            response_requested=True,
-            candidate_questions=[message[:500]],
-        )
-        return TurnInterpretation(**common)
-    if words & _OFF_TOPIC_WORDS:
-        common = _base(message, state)
-        common.update(intent=TurnIntent.OFF_TOPIC, response_requested=True)
-        return TurnInterpretation(**common)
-    return None
 
 
 def _looks_like_question(message: str, *, lowered: str | None = None) -> bool:
@@ -476,6 +426,37 @@ def _catalog_area_mentions(
     return mentions
 
 
+def _city_zone_mentions(
+    text: str,
+    city: str,
+    service_area_matcher: ServiceAreaMatcher,
+) -> list[ServiceArea]:
+    """Find configured zones mentioned in text under one trusted city.
+
+    A candidate can answer a city-level offer with a conversational phrase such
+    as ``Centro is fine``.  The full phrase is not itself a catalogue alias,
+    but the concrete zone is.  Restricting the scan to the already-known city
+    prevents a shared zone name (``Centro`` occurs in several cities) from
+    becoming an ungrounded global match.
+    """
+
+    city_key = normalize_location(city)
+    normalized = normalize_location(text)
+    if not city_key or not normalized:
+        return []
+    matches: dict[str, ServiceArea] = {}
+    for area in service_area_matcher.catalog.areas:
+        city_values = (area.city, *area.city_aliases)
+        if not any(normalize_location(value) == city_key for value in city_values):
+            continue
+        if any(
+            _phrase_in_text(normalized, normalize_location(candidate))
+            for candidate in (area.zone, *area.aliases)
+        ):
+            matches[area.id] = area
+    return list(matches.values())
+
+
 def _location_match_is_safe(
     match: ServiceAreaMatch, candidate: str, service_area_matcher: ServiceAreaMatcher
 ) -> bool:
@@ -542,6 +523,72 @@ def _location_text_is_grounded(
     )
 
 
+def _location_patch_is_grounded(
+    state: ScreeningState,
+    message: str,
+    patch: ExtractedLocation,
+    service_area_matcher: ServiceAreaMatcher,
+) -> bool:
+    """Return whether a provided model location belongs to this turn.
+
+    ``provided=true`` is an extraction claim, not provenance.  A model can
+    echo a previously discussed location from bounded history while answering
+    a different field.  Before that claim reaches reconciliation, require
+    support from the current message or from a catalogue-grounded zone phrase
+    in the message under the trusted city context.
+    """
+
+    raw = _extract_location_raw(patch)
+    if not raw:
+        return False
+    if _location_text_is_grounded(raw, message, patch, service_area_matcher):
+        return True
+
+    pending = state.pending_confirmation
+    contextual_city = patch.city
+    if contextual_city is None and pending is not None and pending.reason == "service_area_city":
+        contextual_city = state.location.city
+
+    if contextual_city:
+        mentioned = _city_zone_mentions(message, contextual_city, service_area_matcher)
+        if len(mentioned) == 1:
+            area = mentioned[0]
+            raw_tokens = set(normalize_location(raw).split())
+            zone_tokens = set(normalize_location(area.zone).split())
+            patch_zone = normalize_location(patch.zone or "")
+            zone_is_in_message = (
+                _phrase_in_text(normalize_location(message), patch_zone) if patch_zone else False
+            )
+            # The model may canonicalize ``Centro is fine`` to ``Madrid
+            # Centro``. Accept that only when the concrete zone is present in
+            # the candidate message and in the proposed value.
+            candidate_match = service_area_matcher.match(
+                raw,
+                city=area.city,
+                zone=patch.zone or area.zone,
+            )
+            if (
+                (zone_tokens <= raw_tokens or zone_is_in_message)
+                and candidate_match.area is not None
+                and candidate_match.area.id == area.id
+            ):
+                return True
+
+    # A complete alias in the current message can ground a provider's
+    # normalized/canonical spelling even when its evidence is not verbatim.
+    current_areas = _catalog_area_mentions(message, service_area_matcher)
+    model_match = service_area_matcher.match(
+        raw,
+        city=contextual_city,
+        zone=patch.zone,
+    )
+    return (
+        len(current_areas) == 1
+        and model_match.area is not None
+        and next(iter(current_areas.values()))[0].id == model_match.area.id
+    )
+
+
 def _location_patch(
     base: ExtractedLocation | None,
     *,
@@ -568,21 +615,20 @@ def _location_patch(
     )
 
 
-def _deterministic_location_interpretation(
+def _closed_location_interpretation(
     state: ScreeningState,
     message: str,
     *,
     service_area_matcher: ServiceAreaMatcher | None,
 ) -> InterpreterResult | None:
-    """Interpret only a closed location answer before contacting the provider.
+    """Interpret a closed location answer after neutral model output.
 
     This is intentionally narrower than :func:`recover_location_answer`,
     which also inspects a provider patch and exact aliases embedded in prose.
-    Before a provider call there is no typed patch to ground, so only a
-    complete catalogue alias, a bare known city, or a zone answer grounded by
-    an existing city offer is eligible.  In particular, a fuzzy suggestion,
-    unsupported city, ambiguous phrase, or natural-language sentence remains
-    model-owned.
+    With no usable typed patch to ground, only a complete catalogue alias, a
+    bare known city, or a zone answer grounded by an existing city offer is
+    eligible. In particular, a fuzzy suggestion, unsupported city, ambiguous
+    phrase, or natural-language sentence remains model-owned.
     """
 
     if service_area_matcher is None:
@@ -610,11 +656,11 @@ def _deterministic_location_interpretation(
     selected: tuple[ServiceAreaMatch, str] | None = None
     if _location_match_is_safe(direct_match, message_text, service_area_matcher):
         if direct_match.area is not None:
-            selected = (direct_match, "preprovider_exact_alias")
+            selected = (direct_match, "fallback_exact_alias")
         elif pending is None:
             # A bare known city is represented as a city-level offer by
             # reconciliation.  It never selects the first catalogue area.
-            selected = (direct_match, "preprovider_known_city")
+            selected = (direct_match, "fallback_known_city")
 
     if pending is not None:
         proposed = pending.proposed_value
@@ -644,7 +690,7 @@ def _deterministic_location_interpretation(
                     and contextual_match.area is not None
                     and contextual_match.area.id in allowed_ids
                 ):
-                    selected = (contextual_match, "preprovider_pending_city_zone")
+                    selected = (contextual_match, "fallback_pending_city_zone")
 
     if selected is None:
         return None
@@ -682,16 +728,50 @@ def recover_location_answer(
 ) -> InterpreterResult:
     """Recover an obvious location answer omitted by a valid model response.
 
-    The provider is still responsible for open-ended extraction.  This narrow
-    fallback runs only while location is active (or a location confirmation is
-    pending), and only accepts an exact catalogue alias or a known city.  It
-    never turns a fuzzy suggestion into an eligible area and never trusts a
-    structured city/zone hint that is contradicted by the candidate message.
+    The provider is still responsible for open-ended extraction. This narrow
+    fallback runs after every provider turn so every non-empty location patch
+    is first grounded in the current candidate message; stale echoes from
+    bounded history are discarded even when a provider forgets the
+    ``provided`` flag. It accepts only an exact catalogue alias, a known city,
+    or a zone grounded by a trusted city offer. It never turns a fuzzy
+    suggestion into an eligible area and never trusts a structured city/zone
+    hint that is contradicted by the candidate message.
     """
 
     interpretation = interpreted.interpretation
     if interpretation.prompt_injection_detected or interpretation.sensitive_data_detected:
         return interpreted
+
+    existing_patch = interpretation.location
+    has_location_claim = existing_patch is not None and (
+        existing_patch.provided or bool(_extract_location_raw(existing_patch))
+    )
+    if (
+        has_location_claim
+        and existing_patch is not None
+        and not _location_patch_is_grounded(
+            state,
+            message,
+            existing_patch,
+            service_area_matcher,
+        )
+    ):
+        # ``provided`` is an extraction flag, not provenance. Providers can
+        # echo a previous location from conversation history (with either
+        # ``provided=true`` or a non-empty default patch) while the candidate
+        # answers a different field. Discard only that stale patch; other
+        # typed updates from the same turn remain available to reconciliation.
+        usage = dict(interpreted.usage)
+        usage.update(
+            {
+                "location_patch_discarded": True,
+                "location_patch_discard_reason": "not_grounded_in_current_message",
+            }
+        )
+        interpretation = interpretation.model_copy(update={"location": None})
+        interpreted = replace(interpreted, interpretation=interpretation, usage=usage)
+        existing_patch = None
+
     if (
         interpretation.intent
         in {
@@ -704,13 +784,12 @@ def recover_location_answer(
     ):
         return interpreted
     pending = state.pending_confirmation
-    location_active = state.current_field is ScreeningField.LOCATION or (
-        pending is not None and pending.field is ScreeningField.LOCATION
+    location_active = (
+        state.current_field is ScreeningField.LOCATION
+        or (pending is not None and pending.field is ScreeningField.LOCATION)
+        or (existing_patch is not None and bool(_extract_location_raw(existing_patch)))
     )
     if not location_active:
-        return interpreted
-    existing_patch = interpretation.location
-    if existing_patch is not None and existing_patch.provided:
         return interpreted
     if existing_patch is not None and existing_patch.ambiguous:
         return interpreted
@@ -758,13 +837,18 @@ def recover_location_answer(
                 selected = (message_text, city_match, city, None, "message_known_city")
 
     # A provider may preserve a short raw phrase in the patch but forget the
-    # ``provided`` bit.  Reuse it only when its evidence is grounded in the
-    # current user message.  Pending city offers additionally provide trusted
-    # city context for a short answer such as ``Centro``.
+    # ``provided`` bit. Reuse it only when its evidence is grounded in the
+    # current user message. Pending city offers additionally provide trusted
+    # city context for a short answer such as ``Centro``. The same grounding
+    # check is applied to ``provided=true`` patches above so stale history
+    # cannot create a correction proposal.
     if selected is None and existing_patch is not None:
         raw = _extract_location_raw(existing_patch)
-        if raw and _location_text_is_grounded(
-            raw, message_text, existing_patch, service_area_matcher
+        if raw and _location_patch_is_grounded(
+            state,
+            message_text,
+            existing_patch,
+            service_area_matcher,
         ):
             patch_city = existing_patch.city
             if patch_city is None and pending is not None and pending.reason == "service_area_city":
@@ -783,6 +867,32 @@ def recover_location_answer(
                     "model_location_evidence",
                 )
 
+            # The model may return the whole natural phrase (for example,
+            # ``Centro is fine``) instead of a catalogue alias. If a unique
+            # zone is grounded in the trusted city context, canonicalize it
+            # rather than leaving a valid zone as unsupported text.
+            if selected is None and patch_city:
+                mentioned = _city_zone_mentions(
+                    message_text,
+                    patch_city,
+                    service_area_matcher,
+                )
+                if len(mentioned) == 1:
+                    area = mentioned[0]
+                    area_match = service_area_matcher.match(
+                        area.zone,
+                        city=area.city,
+                        zone=area.zone,
+                    )
+                    if area_match.status is LocationMatchStatus.EXACT and area_match.area:
+                        selected = (
+                            area.zone,
+                            area_match,
+                            area.city,
+                            area.zone,
+                            "model_location_zone_context",
+                        )
+
     # If the provider omitted the nested patch entirely, a short answer to a
     # known pending city can still be resolved with that trusted city context.
     if selected is None and pending is not None and pending.reason == "service_area_city":
@@ -797,6 +907,23 @@ def recover_location_answer(
                     contextual_match.area.zone,
                     "pending_city_zone",
                 )
+            else:
+                mentioned = _city_zone_mentions(message_text, city, service_area_matcher)
+                if len(mentioned) == 1:
+                    area = mentioned[0]
+                    area_match = service_area_matcher.match(
+                        area.zone,
+                        city=area.city,
+                        zone=area.zone,
+                    )
+                    if area_match.status is LocationMatchStatus.EXACT and area_match.area:
+                        selected = (
+                            area.zone,
+                            area_match,
+                            area.city,
+                            area.zone,
+                            "pending_city_zone_context",
+                        )
 
     if selected is None:
         # Do not let reconciliation's legacy ``provided`` repair treat an
@@ -844,95 +971,6 @@ def _extract_location_raw(patch: ExtractedLocation) -> str:
     ).strip()
 
 
-def _labelled_interpretation(message: str, state: ScreeningState) -> TurnInterpretation | None:
-    """Parse at least two explicit labels; invalid values become clarifications."""
-
-    correction = _correction_requested(message)
-    evidence = message[:500]
-    fields: dict[str, Any] = {}
-    labelled_name = _label_value(message, r"full\s+name|name|nombre")
-    labelled_license = _label_value(message, r"driver'?s?\s+licen[cs]e|licen[cs]e|licencia|carnet")
-    labelled_location = _label_value(message, r"location|city|area|ubicación|ubicacion|ciudad|zona")
-    labelled_availability = _label_value(message, r"availability|disponibilidad")
-    labelled_schedule = _label_value(message, r"schedule|horario|turno")
-    labelled_experience = _label_value(message, r"experience|experiencia")
-    labelled_start = _label_value(message, r"start(?:\s+date)?|empezar|incorporación|incorporacion")
-    labels_present = [
-        labelled_name,
-        labelled_license,
-        labelled_location,
-        labelled_availability,
-        labelled_schedule,
-        labelled_experience,
-        labelled_start,
-    ]
-    minimum_labels = 1 if correction and labelled_name is not None else 2
-    if sum(value is not None for value in labels_present) < minimum_labels:
-        return None
-
-    if labelled_name is not None:
-        name = _simple_name(labelled_name)
-        fields["full_name"] = ExtractedValue(
-            value=name,
-            provided=True,
-            ambiguous=name is None,
-            correction=correction,
-            evidence=evidence,
-        )
-    if labelled_license is not None:
-        license_value = _yes_no(labelled_license)
-        fields["drivers_license"] = ExtractedValue(
-            value=license_value,
-            provided=True,
-            ambiguous=license_value is None,
-            correction=correction,
-            evidence=evidence,
-        )
-    if labelled_location is not None:
-        fields["location"] = ExtractedLocation(
-            raw_value=labelled_location.strip() or None,
-            provided=True,
-            ambiguous=not bool(labelled_location.strip()),
-            correction=correction,
-            evidence=evidence,
-        )
-    if labelled_availability is not None:
-        availability = _availability_value(labelled_availability)
-        fields["availability"] = ExtractedValue(
-            value=availability or None,
-            provided=True,
-            ambiguous=not bool(availability),
-            correction=correction,
-            evidence=evidence,
-        )
-    if labelled_schedule is not None:
-        schedule = _schedule_value(labelled_schedule)
-        fields["preferred_schedule"] = ExtractedValue(
-            value=schedule,
-            provided=True,
-            ambiguous=schedule is None,
-            correction=correction,
-            evidence=evidence,
-        )
-    if labelled_experience is not None:
-        experience = _experience_value(labelled_experience)
-        experience.correction = correction
-        if not experience.provided:
-            experience.ambiguous = True
-            experience.provided = True
-        fields["delivery_experience"] = experience
-    if labelled_start is not None:
-        start = _start_value(labelled_start)
-        start.correction = correction
-        start.ambiguous = not start.provided
-        start.provided = True
-        fields["start_availability"] = start
-
-    common = _base(message, state)
-    common.update(intent=TurnIntent.CORRECTION if correction else TurnIntent.ANSWER, **fields)
-    return TurnInterpretation(**common)
-
-
 def interpret_deterministically(
     state: ScreeningState,
     message: str,
@@ -943,6 +981,20 @@ def interpret_deterministically(
 
     normalized = _normalize(message)
     base = _base(message, state)
+
+    # Exact conversation controls are safe regardless of the pending field.
+    # Natural opt-out prose (for example, "I don't want to continue") remains
+    # model-owned rather than growing this closed vocabulary indefinitely.
+    if normalized in _EXACT_OPT_OUT:
+        base["intent"] = TurnIntent.OPT_OUT
+        return InterpreterResult(
+            interpretation=TurnInterpretation(
+                **base,
+                opt_out_requested=True,
+            ),
+            usage={"requests": 0, "deterministic": True, "deterministic_reason": "opt_out"},
+        )
+
     if state.pending_confirmation is not None:
         confirmation = _yes_no(message)
         if confirmation is not None and normalized in _YES_VALUES | _NO_VALUES:
@@ -960,6 +1012,21 @@ def interpret_deterministically(
         ):
             return None
 
+    if state.faq_offer_made and state.candidate_confirmed and not state.faq_completed:
+        has_questions = _yes_no(message)
+        if has_questions is not None and normalized in _YES_VALUES | _NO_VALUES:
+            return InterpreterResult(
+                interpretation=TurnInterpretation(
+                    **base,
+                    faq_complete=not has_questions,
+                ),
+                usage={
+                    "requests": 0,
+                    "deterministic": True,
+                    "deterministic_reason": "faq_completion_control",
+                },
+            )
+
     if state.current_field is ScreeningField.DRIVERS_LICENSE:
         license_answer = _LICENSE_VALUES.get(normalized)
         if license_answer is not None:
@@ -974,6 +1041,43 @@ def interpret_deterministically(
                     "requests": 0,
                     "deterministic": True,
                     "deterministic_reason": "license_control",
+                },
+            )
+
+    # These are exact canonical answers to closed enum questions. Longer,
+    # compound, corrective, or ambiguous wording still goes to the semantic
+    # interpreter so this module does not become a phrase dictionary.
+    if state.current_field is ScreeningField.AVAILABILITY:
+        availability = _EXACT_AVAILABILITY.get(normalized)
+        if availability is not None:
+            return InterpreterResult(
+                interpretation=TurnInterpretation(
+                    **base,
+                    availability=ExtractedValue(
+                        value=[availability], provided=True, evidence=message[:500]
+                    ),
+                ),
+                usage={
+                    "requests": 0,
+                    "deterministic": True,
+                    "deterministic_reason": "availability_control",
+                },
+            )
+
+    if state.current_field is ScreeningField.PREFERRED_SCHEDULE:
+        schedule = _EXACT_SCHEDULE.get(normalized)
+        if schedule is not None:
+            return InterpreterResult(
+                interpretation=TurnInterpretation(
+                    **base,
+                    preferred_schedule=ExtractedValue(
+                        value=schedule, provided=True, evidence=message[:500]
+                    ),
+                ),
+                usage={
+                    "requests": 0,
+                    "deterministic": True,
+                    "deterministic_reason": "schedule_control",
                 },
             )
 
@@ -993,7 +1097,7 @@ def interpret_deterministically(
                 },
             )
 
-    if not state.disclosure_acknowledged and normalized in _DISCLOSURE_ACKNOWLEDGEMENTS:
+    if not state.disclosure_acknowledged and _is_disclosure_acknowledgement(message):
         return InterpreterResult(
             interpretation=TurnInterpretation(**base, disclosure_acknowledged=True),
             usage={"requests": 0, "deterministic": True, "deterministic_reason": "disclosure"},
@@ -1019,25 +1123,7 @@ def interpret_deterministically(
             usage={"requests": 0, "deterministic": True, "deterministic_reason": "language_switch"},
         )
 
-    question = _question_or_off_topic(message, state)
-    if question is not None:
-        return InterpreterResult(
-            interpretation=question,
-            usage={
-                "requests": 0,
-                "deterministic": True,
-                "deterministic_reason": "question_or_off_topic",
-            },
-        )
-
-    labelled = _labelled_interpretation(message, state)
-    if labelled is not None:
-        return InterpreterResult(
-            interpretation=labelled,
-            usage={"requests": 0, "deterministic": True, "deterministic_reason": "labelled_fields"},
-        )
-
-    location = _deterministic_location_interpretation(
+    location = _closed_location_interpretation(
         state,
         message,
         service_area_matcher=service_area_matcher,
@@ -1045,8 +1131,37 @@ def interpret_deterministically(
     if location is not None:
         return location
 
+    # Start availability is intentionally stored as candidate-authored text.
+    # It is not an eligibility rule and does not require the application to
+    # infer a calendar date. If the model produced no usable interpretation,
+    # retaining a direct answer verbatim is safer than forcing the candidate
+    # through a provider-error loop or growing a phrase-specific parser.
+    if state.current_field is ScreeningField.START_AVAILABILITY:
+        raw_start = " ".join(message.split()).strip()
+        if raw_start and not _looks_like_question(raw_start):
+            return InterpreterResult(
+                interpretation=TurnInterpretation(
+                    **base,
+                    start_availability=StartAvailabilityExtraction(
+                        raw_value=raw_start[:300],
+                        precision="unknown",
+                        provided=True,
+                        evidence=message[:500],
+                    ),
+                ),
+                usage={
+                    "requests": 0,
+                    "deterministic": True,
+                    "deterministic_reason": "start_availability_verbatim",
+                },
+            )
+
+    # Natural-language field answers remain model-owned. An explicit name
+    # prefix and a short title-cased bare name are the only name shortcuts;
+    # compound turns and lowercase prose remain on the semantic model path.
     if state.current_field is ScreeningField.FULL_NAME:
-        name = _simple_name(message) if _NAME_PREFIX.match(message.strip()) else _bare_name(message)
+        stripped = message.strip()
+        name = _simple_name(stripped) if _NAME_PREFIX.match(stripped) else _bare_name(stripped)
         if name is not None:
             return InterpreterResult(
                 interpretation=TurnInterpretation(
@@ -1054,10 +1169,28 @@ def interpret_deterministically(
                     disclosure_acknowledged=True,
                     full_name=ExtractedValue(value=name, provided=True, evidence=message[:500]),
                 ),
-                usage={"requests": 0, "deterministic": True, "deterministic_reason": "name_prefix"},
+                usage={
+                    "requests": 0,
+                    "deterministic": True,
+                    "deterministic_reason": (
+                        "name_prefix" if _NAME_PREFIX.match(stripped) else "name_answer"
+                    ),
+                },
             )
 
     return None
 
 
-__all__ = ["interpret_deterministically"]
+def is_exact_opt_out(message: str) -> bool:
+    """Return whether ``message`` is an application-owned opt-out control.
+
+    The coordinator keeps this one safety-critical control provider-free.  It
+    is deliberately exposed separately from :func:`interpret_deterministically`
+    so that checking for an exact opt-out does not accidentally put every
+    deterministic shortcut ahead of the language model.
+    """
+
+    return _normalize(message) in _EXACT_OPT_OUT
+
+
+__all__ = ["interpret_deterministically", "is_exact_opt_out"]

@@ -500,6 +500,9 @@ async def test_native_json_validate_failed_retries_once_and_returns_typed_start_
         await http_client.aclose()
 
     assert capture.calls == 2
+    retry_messages = json.dumps(capture.payloads[1]["messages"])
+    assert "candidate_questions" in retry_messages
+    assert "null" in retry_messages
     start = result.interpretation.start_availability
     assert isinstance(start, StartAvailabilityExtraction)
     assert start.raw_value == "lo antes posible"

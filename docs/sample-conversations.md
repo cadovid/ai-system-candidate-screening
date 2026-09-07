@@ -1,6 +1,6 @@
 # Sample conversations
 
-These examples are deliberately synthetic. They show the shape of the state machine and deterministic outcomes, not a promise about a real employer, job, salary, coverage map, or provider wording. The bundled fixtures live in [`data/sample_conversations.json`](../data/sample_conversations.json), [`data/scenarios/scenarios.json`](../data/scenarios/scenarios.json), and [`data/evals/eval_cases.json`](../data/evals/eval_cases.json). Provider-generated wording can vary; statuses, reason codes, and area matches come from Python.
+These examples are deliberately synthetic. They show the shape of the state machine and deterministic outcomes, not a promise about a real employer, job, salary, coverage map, or provider wording. The bundled fixtures live in [`data/sample_conversations.json`](../data/sample_conversations.json), [`data/scenarios/scenarios.json`](../data/scenarios/scenarios.json), and [`data/evals/eval_cases.json`](../data/evals/eval_cases.json). Normal safe turns use the typed LLM interpreter first; a schema-valid neutral/empty result may receive narrow deterministic completion, while provider failures remain retryable failures. Provider-generated extraction wording can vary, but statuses, reason codes, area matches, and candidate-facing response plans come from Python. The live renderer chooses from a bounded copy set for a prompt or clarification; the chosen response is persisted, and tests inject a stable selector. The deterministic suite currently contains 24 scripted cases, including natural-language multi-field answers, conversational corrections, bilingual FAQ interruption, code-switching, and ambiguous city phrasing.
 
 The JSON snippets below omit timestamps and evidence quotes for readability. In the database, accepted fields can retain bounded evidence and a message ID, and every turn carries a state version. Relative periods such as “next week” are intentionally valid start-availability answers: they are stored with `precision: "week"` and no exact date, whereas genuinely vague wording remains subject to clarification.
 
@@ -27,8 +27,20 @@ Assistant: ¿Cuántos años de experiencia en reparto tienes? Si quieres, indica
 Candidate: 3 años en Glovo
 Assistant: ¿Cuándo podrías empezar?
 Candidate: Lo antes posible
-Assistant: Revisa la información anterior. ¿Es todo correcto?
+Assistant: Revisa los datos que he anotado:
+• Nombre completo: Ana García
+• Licencia de conducir vigente: Sí
+• Zona de reparto: Madrid — Centro
+• Disponibilidad: tiempo completo
+• Horario preferido: mañana
+• Experiencia en reparto: 3 años (Glovo)
+• Disponibilidad para empezar: Lo antes posible
+¿Está todo correcto?
 Candidate: Sí
+Assistant: Antes de terminar, ¿tienes alguna pregunta sobre la empresa, el puesto o el proceso de selección?
+Candidate: ¿Qué equipo necesito para trabajar?
+Assistant: [Respuesta breve basada en el FAQ ficticio.] ¿Tienes alguna otra pregunta?
+Candidate: No, ninguna más.
 Assistant: ¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos.
 ```
 
@@ -89,6 +101,8 @@ Assistant text in chat: ¿Cuántos años de experiencia en reparto tienes? Si qu
 Browser TTS (optional): reads the assistant text above.
 
 Candidate continues with the remaining spoken answers, reviews the final confirmation text, and says: "Sí".
+Assistant text in chat: Antes de terminar, ¿tienes alguna pregunta sobre la empresa, el puesto o el proceso de selección?
+Candidate says: "No tengo más preguntas"; its reviewed transcript is submitted through the same text endpoint.
 Assistant text in chat: ¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos.
 The completion message remains available as written text in the chat; the terminal state then disables further turns.
 ```
@@ -125,8 +139,18 @@ Candidate: Yes.
 Assistant: Which city and area would you like to deliver in?
 Candidate: Barcelona Eixample
 Candidate: Full time, flexible schedule, four years on Uber Eats, ASAP.
-Assistant: Please review the information above. Is everything correct?
+Assistant: Please review what I have recorded:
+• Full name: Grace Lee
+• Valid driver's licence: Yes
+• Delivery area: Barcelona — Eixample
+• Availability: full-time
+• Preferred schedule: flexible
+• Delivery experience: 4 years (Uber Eats)
+• Available to start: ASAP
+Is everything correct?
 Candidate: Yes
+Assistant: Before we finish, do you have any questions about the company, the role, or the hiring process?
+Candidate: No more questions, thanks.
 Assistant: Thanks! Your screening information meets the stated requirements. A recruiter will review it and contact you about next steps.
 ```
 
@@ -173,14 +197,14 @@ Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de 
 
 The matcher normalizes case, accents, punctuation, and whitespace, then accepts the unique catalogue entry `es-mad-centro`. `confirmed` is true because it is an exact/alias match.
 
-The same deterministic path handles the common English wording:
+The LLM receives this normal safe turn first. The same deterministic catalogue matcher then validates the common English wording (and may complete a neutral/empty typed response):
 
 ```text
 Candidate: The city center of Madrid
 Assistant: Are you looking for full-time, part-time, or weekend work?
 ```
 
-`The city center of Madrid`, `Madrid center`, and `Madrid city centre` are configured aliases for `Madrid — Centro`; they are not accepted because an LLM guessed their meaning.
+`The city center of Madrid`, `Madrid center`, and `Madrid city centre` are configured aliases for `Madrid — Centro`; they are accepted because the application-owned catalogue matcher confirms the candidate’s text, never because the LLM guessed coverage.
 
 Ambiguous city:
 
@@ -210,7 +234,7 @@ Candidate: Bilbao
 Assistant: Gracias por tu tiempo. He interpretado tu zona de reparto como «Bilbao». No está entre las zonas de servicio configuradas, así que no podemos continuar con esta evaluación.
 ```
 
-Outcome: `disqualified`, `reason_codes: ["outside_service_area"]`, `conversation_status: completed`. This is a statement about the fictional configured catalogue only.
+Outcome: `disqualified`, `reason_codes: ["outside_service_area"]`, `conversation_status: completed`. This is a statement about the fictional configured catalogue only. When an open-ended model interpretation proposes an unsupported location, reconciliation first stores it as `pending_confirmation` with `reason: "decision_impact_confirmation"`; a candidate confirmation is required before that proposal can drive the outside-area decision. The exact catalogue path shown here is application-owned and can be evaluated directly.
 
 ## Correction and confirmation
 
@@ -295,11 +319,11 @@ Provider failure:
   "error_code": "provider_unavailable",
   "retryable": true,
   "state_version": 1,
-  "assistant_message": "I’m sorry, I’m temporarily unable to process that message. Your previous information is unchanged; please try again."
+  "assistant_message": "I’m sorry, I’m temporarily unable to process that message. Please try again."
 }
 ```
 
-The failed turn is persisted so the same idempotency key can be replayed safely. Storage failure has a similar user-facing boundary; unexpected HTTP errors become the generic error shape with a correlation ID.
+The failed turn is persisted so the same idempotency key can be replayed safely. A provider/API/schema failure is distinct from a valid-but-insufficient response and does not trigger semantic deterministic recovery or an alternate provider. Storage failure has a similar user-facing boundary; unexpected HTTP errors become the generic error shape with a correlation ID.
 
 Opt-out:
 

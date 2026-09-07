@@ -7,10 +7,32 @@
  */
 
 export const DEFAULT_AVATAR_SRC = "/static/images/olivia-avatar.webp";
+export const MIN_TYPING_DURATION_MS = 360;
 
 const ASSISTANT_ROLE = "assistant";
 const USER_ROLE = "user";
 const PENDING_SELECTOR = '[data-pending="true"]';
+
+/**
+ * Keep a very fast successful reply human-readable without slowing down a
+ * provider that is already taking longer than the minimum.  The clock and
+ * delay are injectable so the browser behavior can be tested without real
+ * timers; callers should invoke this only for successful replies.
+ */
+export async function waitForMinimumTypingDuration(
+  startedAt,
+  {
+    minimumMs = MIN_TYPING_DURATION_MS,
+    now = () => Date.now(),
+    delay = (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
+  } = {},
+) {
+  const elapsed = Math.max(0, Number(now()) - Number(startedAt));
+  const remaining = Math.max(0, Number(minimumMs) - elapsed);
+  if (remaining <= 0) return 0;
+  await delay(remaining);
+  return remaining;
+}
 
 function normalizeRole(role) {
   return role === USER_ROLE ? USER_ROLE : ASSISTANT_ROLE;

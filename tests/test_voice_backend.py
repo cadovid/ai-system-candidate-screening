@@ -192,6 +192,10 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
             detected_language=Language.EN,
             drivers_license=ExtractedValue(value=False, provided=True),
         ),
+        TurnInterpretation(
+            detected_language=Language.EN,
+            confirmation=True,
+        ),
     ]
     text_coordinator = _build_coordinator(factory, _QueueInterpreter(outputs))
     voice_coordinator = _build_coordinator(factory, _QueueInterpreter(outputs))
@@ -210,6 +214,12 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
         "text-license",
         input_mode=InteractionMode.TEXT,
     )
+    text_confirmation = await text_coordinator.process_turn(
+        text_conversation.conversation_id,
+        "Yes",
+        "text-license-confirm",
+        input_mode=InteractionMode.TEXT,
+    )
     voice_first = await voice_coordinator.process_turn(
         voice_conversation.conversation_id,
         "alex example",
@@ -222,6 +232,12 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
         "voice-license",
         input_mode=InteractionMode.VOICE,
     )
+    voice_confirmation = await voice_coordinator.process_turn(
+        voice_conversation.conversation_id,
+        "Yes",
+        "voice-license-confirm",
+        input_mode=InteractionMode.VOICE,
+    )
 
     assert (
         text_first.screening_status is voice_first.screening_status is ScreeningStatus.IN_PROGRESS
@@ -229,11 +245,16 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
     assert (
         text_terminal.screening_status
         is voice_terminal.screening_status
+        is ScreeningStatus.IN_PROGRESS
+    )
+    assert (
+        text_confirmation.screening_status
+        is voice_confirmation.screening_status
         is ScreeningStatus.DISQUALIFIED
     )
-    assert text_terminal.decision is not None and voice_terminal.decision is not None
-    text_decision = text_terminal.decision.model_dump(mode="json")
-    voice_decision = voice_terminal.decision.model_dump(mode="json")
+    assert text_confirmation.decision is not None and voice_confirmation.decision is not None
+    text_decision = text_confirmation.decision.model_dump(mode="json")
+    voice_decision = voice_confirmation.decision.model_dump(mode="json")
     # Decision timestamps describe when each independent test conversation was
     # evaluated; all reproducible decision content must otherwise match.
     text_decision.pop("decided_at", None)
@@ -250,7 +271,14 @@ async def test_voice_and_text_turns_have_identical_canonical_screening_results(
     async with SqlAlchemyUnitOfWork(factory) as uow:
         assert uow.session is not None
         rows = tuple((await uow.session.scalars(select(TurnORM))).all())
-        assert sorted(turn.input_mode for turn in rows) == ["text", "text", "voice", "voice"]
+        assert sorted(turn.input_mode for turn in rows) == [
+            "text",
+            "text",
+            "text",
+            "voice",
+            "voice",
+            "voice",
+        ]
         assert set(Base.metadata.tables).isdisjoint({"audio", "voice_recordings"})
 
     await engine.dispose()

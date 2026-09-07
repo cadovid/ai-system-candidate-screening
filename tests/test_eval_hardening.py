@@ -41,6 +41,10 @@ def test_fixture_catalog_has_meaningful_bilingual_security_and_resilience_cases(
         "faq_then_answer",
         "off_topic_then_answer",
         "correction_requires_confirmation",
+        "natural_language_multi_field",
+        "natural_language_correction",
+        "faq_spanish_then_answer",
+        "natural_ambiguous_location",
     } <= scenarios.keys()
     assert {case.scenario for case in cases} == set(scenarios)
 
@@ -65,6 +69,13 @@ def test_deterministic_report_asserts_reason_codes_state_language_and_interactio
     assert by_id["provider_failure"].retryable is True
     assert by_id["malformed_output"].retryable is True
     assert by_id["duplicate_answer"].canonical_fields["pending_confirmation"] is None
+    assert by_id["natural_language_multi_field"].canonical_fields["full_name"] == "Priya Shah"
+    assert by_id["natural_language_correction"].correction_confirmed is True
+    assert by_id["faq_spanish_then_answer"].faq_answered is True
+    assert (
+        by_id["natural_ambiguous_location"].canonical_fields["location"]["match_status"]
+        == "ambiguous"
+    )
 
 
 def test_fixture_interpreter_handles_pending_confirmation_and_multi_field_patches() -> None:

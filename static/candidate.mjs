@@ -7,6 +7,7 @@ import {
   replaceTypingIndicator,
   showTypingIndicator,
   scrollToLatest,
+  waitForMinimumTypingDuration,
 } from "./chat-ui.mjs";
 
 const chat = document.getElementById("chat");
@@ -293,6 +294,7 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
     addBubble(requestMessage, "user", { forceScroll: true });
     pending.bubbleAdded = true;
   }
+  const typingStartedAt = Date.now();
   showPendingAssistant({ forceScroll: true });
   message.value = "";
   resizeMessage();
@@ -308,13 +310,15 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
       body: JSON.stringify({ message: requestMessage, input_mode: inputMode, ...(explicitLanguage ? { language: explicitLanguage } : {}) }),
     });
     const data = await response.json().catch(() => ({}));
-    if (data.assistant_message && pending.responseTurnId !== data.turn_id) {
-      replacePendingAssistant(data.assistant_message);
-      assistantMessageDisplayed = true;
-      pending.responseTurnId = data.turn_id || "displayed";
-    }
     if (!response.ok) {
       retryMessage = data.error?.message || data.assistant_message || translate("try_again");
+      // Errors are actionable immediately; never add the success affordance
+      // delay to a failed or unavailable turn.
+      if (data.assistant_message && pending.responseTurnId !== data.turn_id) {
+        replacePendingAssistant(data.assistant_message);
+        assistantMessageDisplayed = true;
+        pending.responseTurnId = data.turn_id || "displayed";
+      }
       if (!assistantMessageDisplayed) replacePendingAssistant(retryMessage);
       // A failed turn is already durably recorded by the API. Retrying it
       // with the same key would only replay that failure, so let the next
@@ -323,6 +327,12 @@ async function sendTurn(content, explicitLanguage = null, inputMode = "text") {
       // key remains reusable.
       if (data.turn_id) pendingTurn = null;
     } else {
+      if (data.assistant_message && pending.responseTurnId !== data.turn_id) {
+        await waitForMinimumTypingDuration(typingStartedAt);
+        replacePendingAssistant(data.assistant_message);
+        assistantMessageDisplayed = true;
+        pending.responseTurnId = data.turn_id || "displayed";
+      }
       session.screening_status = data.screening_status; localStorage.setItem(sessionKey, JSON.stringify(session));
       setTerminal(isTerminal(data), data.screening_status === "abandoned");
       if (!terminal && readAloud.checked && data.assistant_message) replyToSpeak = data.assistant_message;

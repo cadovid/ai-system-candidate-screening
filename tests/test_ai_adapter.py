@@ -19,12 +19,18 @@ from pydantic_ai.models.openrouter import OpenRouterModel, OpenRouterModelSettin
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers.groq import GroqProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-from candidate_screening.ai.interpreter import AIProviderError, InterpreterDependencies
+from candidate_screening.ai.interpreter import (
+    AIProviderError,
+    ConversationGoal,
+    InterpreterDependencies,
+)
 from candidate_screening.ai.pydantic_ai import (
     PydanticAIInterpreter,
     PydanticAIModelFactory,
     SummaryGenerator,
+    _extraction_instructions_for,
     _model_settings,
     _normalize_provider_error,
     _output_retry_budget,
@@ -37,7 +43,12 @@ from candidate_screening.ai.schemas import RecruiterSummaryOutput, TurnInterpret
 from candidate_screening.application.reconciliation import reconcile_interpretation
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import Language, ScreeningField, ScreeningStatus
-from candidate_screening.domain.models import ScreeningDecision, ScreeningState, StartDatePrecision
+from candidate_screening.domain.models import (
+    PendingConfirmation,
+    ScreeningDecision,
+    ScreeningState,
+    StartDatePrecision,
+)
 
 
 def _dependencies(language: Language = Language.EN) -> InterpreterDependencies:
@@ -59,6 +70,35 @@ def _settings() -> Settings:
         llm_max_retries=0,
         llm_timeout_seconds=1,
     )
+
+
+def test_extraction_prompt_includes_bounded_pending_confirmation_context() -> None:
+    state = ScreeningState.empty(Language.EN).model_copy(
+        update={
+            "pending_confirmation": PendingConfirmation(
+                field=ScreeningField.FULL_NAME,
+                proposed_value={
+                    "value": "Ada Lovelace",
+                    "evidence": "Ada Lovelace",
+                },
+                reason="candidate_correction",
+            )
+        }
+    )
+    dependencies = InterpreterDependencies(
+        state=state,
+        pending_field=ScreeningField.FULL_NAME,
+        language=Language.EN,
+        now=datetime(2026, 1, 2, tzinfo=UTC),
+        local_date="2026-01-02",
+    )
+
+    prompt = _extraction_instructions_for(dependencies)
+
+    assert "Pending confirmation context" in prompt
+    assert "candidate_correction" in prompt
+    assert "Ada Lovelace" in prompt
+    assert '"pending_confirmation"' not in prompt
 
 
 @pytest.mark.asyncio
@@ -119,12 +159,29 @@ async def test_function_model_receives_rendered_dependencies_without_network() -
     assert len(observed) == 1
     assert observed[0][1] is not None
     assert "pending field is none" in observed[0][1]
+    assert "pending field is context, not a restriction" in observed[0][1]
+    assert "multi-field" in observed[0][1]
+    assert "corrections" in observed[0][1]
+    assert "code-switching" in observed[0][1]
+    assert "write an assistant response" in observed[0][1]
     # Empty/default state fields are omitted to keep each extraction prompt
     # small; populated canonical values are still rendered when present.
     assert "Canonical state (context only) is:" in observed[0][1]
     assert "do not return" in observed[0][1]
     request = observed[0][0][0]
     assert isinstance(request, ModelRequest)
+
+
+def test_final_review_prompt_names_goal_and_forbids_canonical_echoes() -> None:
+    dependencies = _dependencies(Language.ES)
+    dependencies.conversation_goal = ConversationGoal.FINAL_REVIEW
+
+    prompt = _extraction_instructions_for(dependencies)
+
+    assert "conversational goal for this turn is ``final_review``" in prompt
+    assert "Todo es correcto" in prompt
+    assert "final_confirmation=true" in prompt
+    assert "Do not echo canonical field patches" in prompt
 
 
 @pytest.mark.asyncio
@@ -177,6 +234,7 @@ async def test_actionable_relative_start_period_is_stored_as_unambiguous_patch(
     instructions = observed_instructions[0]
     state_marker = "Canonical state (context only) is:"
     priority_marker = "Priority start-availability rule:"
+    assert instructions.count(priority_marker) == 1
     assert instructions.index(priority_marker) > instructions.index(state_marker)
     priority_tail = instructions[instructions.index(priority_marker) :]
     assert "next week" in priority_tail
@@ -331,8 +389,12 @@ def test_model_factory_builds_groq_openai_and_openrouter_models() -> None:
     openai = PydanticAIModelFactory().create(
         Settings(llm_model="openai:gpt-test", openai_api_key=SecretStr("test-openai"))
     )
-    openrouter_settings = Settings(
-        llm_model="openrouter:openrouter/free",
+    openrouter_settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        # Keep this branch on an unreviewed explicit model: arbitrary
+        # OpenRouter overrides remain supported, but do not inherit the
+        # GLM-specific native-output profile.
+        llm_model="openrouter:some/provider-model",
         openrouter_api_key=SecretStr("test-openrouter"),
         openrouter_data_collection="deny",
         openrouter_zdr=True,
@@ -358,7 +420,7 @@ def test_model_factory_builds_groq_openai_and_openrouter_models() -> None:
     assert isinstance(openai, OpenAIResponsesModel)
     assert openai.model_name == "gpt-test"
     assert isinstance(openrouter, OpenRouterModel)
-    assert openrouter.model_name == "openrouter/free"
+    assert openrouter.model_name == "some/provider-model"
     assert openrouter.profile.supports_tools is True
     assert openrouter.profile.default_structured_output_mode == "tool"
     model_settings = cast(OpenRouterModelSettings, _model_settings(openrouter_settings))
@@ -392,6 +454,96 @@ def test_model_factory_builds_another_supported_groq_model_without_source_change
     assert model.profile.default_structured_output_mode == "tool"
 
 
+def test_glm_model_factory_uses_native_json_profile_and_transport_retry_guard() -> None:
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+        openrouter_timeout_seconds=37,
+    )
+
+    model = PydanticAIModelFactory().create(settings)
+    provider = cast(OpenRouterProvider, model._provider)
+
+    assert isinstance(model, OpenRouterModel)
+    assert model.model_name == "z-ai/glm-5.2:free"
+    assert model.profile.supports_json_schema_output is True
+    assert model.profile.default_structured_output_mode == "native"
+    assert provider.client.max_retries == 0
+    assert provider.client.timeout == 37
+
+
+def test_unreviewed_openrouter_model_keeps_generic_tool_profile() -> None:
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:some/provider-model",
+        openrouter_api_key=SecretStr("test-openrouter"),
+    )
+
+    model = PydanticAIModelFactory().create(settings)
+
+    assert isinstance(model, OpenRouterModel)
+    assert model.profile.supports_json_schema_output is False
+    assert model.profile.default_structured_output_mode == "tool"
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "expected_budget"),
+    [("high", 1_605), ("xhigh", 6_420)],
+)
+def test_glm_reasoning_settings_and_derived_output_budget(
+    reasoning_effort: str, expected_budget: int
+) -> None:
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+        openrouter_reasoning_effort=reasoning_effort,  # type: ignore[arg-type]
+        llm_max_output_tokens=321,
+        llm_extraction_temperature=0.2,
+    )
+
+    model_settings = cast(dict[str, Any], _model_settings(settings, extraction=True))
+
+    assert model_settings["max_tokens"] == expected_budget
+    assert model_settings["timeout"] == settings.openrouter_timeout_seconds
+    assert model_settings["openrouter_reasoning"] == {
+        "enabled": True,
+        "effort": reasoning_effort,
+        "exclude": True,
+    }
+    assert model_settings["openrouter_usage"] == {"include": True}
+    assert model_settings["openrouter_provider"] == {
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+    }
+    assert model_settings["temperature"] == 0.2
+
+    summary_settings = cast(dict[str, Any], _model_settings(settings, extraction=False))
+    assert summary_settings["max_tokens"] == expected_budget
+    assert "temperature" not in summary_settings
+
+
+def test_openrouter_output_retry_budget_is_bounded_by_model_specific_setting() -> None:
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+        llm_max_retries=5,
+        openrouter_output_retries=1,
+    )
+
+    assert _output_retry_budget(settings) == 1
+    assert _output_retry_budget(settings.model_copy(update={"llm_max_retries": 0})) == 0
+    assert _output_retry_budget(settings.model_copy(update={"openrouter_output_retries": 0})) == 0
+
+    extraction, summary = build_agents(settings, model=TestModel())
+    assert extraction._max_output_retries == 1
+    assert summary._max_output_retries == 1
+
+
 @pytest.mark.parametrize("model_name", ["openai/gpt-oss-20b", "openai/gpt-oss-120b"])
 def test_groq_gpt_oss_agents_keep_tool_structured_output(model_name: str) -> None:
     settings = Settings(
@@ -412,18 +564,38 @@ def test_non_groq_agents_keep_tool_structured_output() -> None:
     assert summary.output_type is RecruiterSummaryOutput
 
 
-def test_groq_provider_disables_hidden_sdk_http_retries() -> None:
+def test_injected_glm_models_keep_tool_structured_output_for_deterministic_adapters() -> None:
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+    )
+
+    extraction, summary = build_agents(settings, model=TestModel())
+
+    assert extraction.output_type is TurnInterpretation
+    assert summary.output_type is RecruiterSummaryOutput
+
+
+def test_groq_provider_configures_bounded_sdk_transport_retries() -> None:
     settings = Settings(
         llm_model="groq:openai/gpt-oss-20b",
         groq_api_key=SecretStr("test-groq"),
         llm_timeout_seconds=19,
+        groq_transport_retries=2,
     )
 
     model = PydanticAIModelFactory().create(settings)
     provider = cast(GroqProvider, model._provider)
 
-    assert provider.client.max_retries == 0
+    assert provider.client.max_retries == 2
     assert provider.client.timeout == 19
+
+    no_retries = PydanticAIModelFactory().create(
+        settings.model_copy(update={"groq_transport_retries": 0})
+    )
+    no_retry_provider = cast(GroqProvider, no_retries._provider)
+    assert no_retry_provider.client.max_retries == 0
 
 
 def test_non_gpt_oss_groq_settings_keep_reasoning_format_compatibility() -> None:
@@ -492,6 +664,64 @@ async def test_groq_retries_one_malformed_output_without_transport_retry() -> No
 
 
 @pytest.mark.asyncio
+async def test_glm_retries_one_malformed_output_with_no_provider_fallback() -> None:
+    calls = 0
+
+    async def respond(_messages: list[Any], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        assert info.output_tools
+        args: dict[str, Any]
+        if calls == 1:
+            args = {"language_confidence": 2}
+        else:
+            args = {"intent": "answer", "language_confidence": 1}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, args)])
+
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+        llm_max_retries=5,
+        openrouter_output_retries=1,
+    )
+    interpreter = PydanticAIInterpreter(settings, model=FunctionModel(respond))
+
+    result = await interpreter.interpret("hello", _dependencies())
+
+    assert result.interpretation.intent.value == "answer"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_glm_invalid_output_retry_can_be_disabled() -> None:
+    calls = 0
+
+    async def respond(_messages: list[Any], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        assert info.output_tools
+        return ModelResponse(
+            parts=[ToolCallPart(info.output_tools[0].name, {"language_confidence": 2})]
+        )
+
+    settings = Settings(  # pyright: ignore[reportCallIssue]
+        _env_file=None,  # pyright: ignore[reportCallIssue]
+        llm_model="openrouter:z-ai/glm-5.2:free",
+        openrouter_api_key=SecretStr("test-openrouter"),
+        llm_max_retries=5,
+        openrouter_output_retries=0,
+    )
+    interpreter = PydanticAIInterpreter(settings, model=FunctionModel(respond))
+
+    with pytest.raises(AIProviderError) as error:
+        await interpreter.interpret("hello", _dependencies())
+
+    assert error.value.category == "invalid_output"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_model_http_rate_limit_is_normalized() -> None:
     async def rate_limited(_messages: list[Any], _info: AgentInfo) -> ModelResponse:
         raise ModelHTTPError(429, "test-model", {"message": "not exposed"})
@@ -512,7 +742,7 @@ async def test_model_http_rate_limit_is_normalized() -> None:
 
 
 def test_non_http_model_api_error_is_normalized_without_provider_details() -> None:
-    error = _normalize_provider_error(ModelAPIError("openrouter/free", "private provider body"))
+    error = _normalize_provider_error(ModelAPIError("z-ai/glm-5.2:free", "private provider body"))
 
     assert error.category == "unavailable"
     assert str(error) == "model provider request failed"

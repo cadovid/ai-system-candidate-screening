@@ -3,19 +3,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from candidate_screening.ai.schemas import (
+    ExtractedDeliveryExperience,
     ExtractedLocation,
     ExtractedValue,
     TurnIntent,
     TurnInterpretation,
 )
 from candidate_screening.application import ConversationController, FAQCatalog
+from candidate_screening.application.response_plan import ResponseKind
 from candidate_screening.domain import (
+    AvailabilityType,
     Language,
     LocationMatchStatus,
+    LocationState,
+    SchedulePreference,
     ScreeningEngine,
     ScreeningField,
     ScreeningState,
     ScreeningStatus,
+    SourcedValue,
 )
 from candidate_screening.domain.service_areas import ServiceAreaMatcher
 
@@ -267,7 +273,7 @@ def test_faq_question_is_answered_and_screening_prompt_resumes(
     )
     assert result.faq_answered is True
     assert "Morning" in result.assistant_message
-    assert "What is your full name?" in result.assistant_message
+    assert "full name" in result.assistant_message
     assert result.next_field is ScreeningField.FULL_NAME
 
 
@@ -303,3 +309,88 @@ def test_off_topic_message_is_acknowledged_before_resuming_screening(
     )
     assert result.next_field is ScreeningField.FULL_NAME
     assert "don’t have that information" in result.assistant_message
+
+
+def test_question_intent_without_a_question_becomes_field_clarification(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    controller = ConversationController(ScreeningEngine(), service_area_matcher)
+    state = ScreeningState.empty(Language.EN).model_copy(
+        update={
+            "full_name": SourcedValue(value="Emma Frost"),
+            "drivers_license": SourcedValue(value=True),
+            "location": LocationState(
+                city="Madrid",
+                service_area_id="es-mad-centro",
+                match_status=LocationMatchStatus.EXACT,
+                confirmed=True,
+            ),
+            "availability": SourcedValue(value=[AvailabilityType.FULL_TIME]),
+            "current_field": ScreeningField.PREFERRED_SCHEDULE,
+        }
+    )
+
+    result = controller.process(
+        state,
+        TurnInterpretation(intent=TurnIntent.QUESTION, response_requested=True),
+    )
+
+    assert result.response_plan is not None
+    assert result.response_plan.kind is ResponseKind.CLARIFICATION
+    assert "schedule" in result.assistant_message.casefold()
+    assert "don’t have that information" not in result.assistant_message
+
+
+def test_ambiguous_schedule_clarification_tells_candidate_what_was_heard(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    controller = ConversationController(ScreeningEngine(), service_area_matcher)
+    state = ScreeningState.empty(Language.EN).model_copy(
+        update={
+            "full_name": SourcedValue(value="Emma Frost"),
+            "drivers_license": SourcedValue(value=True),
+            "location": LocationState(
+                city="Madrid",
+                service_area_id="es-mad-centro",
+                match_status=LocationMatchStatus.EXACT,
+                confirmed=True,
+            ),
+            "availability": SourcedValue(value=[AvailabilityType.FULL_TIME]),
+            "current_field": ScreeningField.PREFERRED_SCHEDULE,
+        }
+    )
+    interpretation = TurnInterpretation(
+        preferred_schedule=ExtractedValue(
+            value=SchedulePreference.FLEXIBLE,
+            provided=True,
+            ambiguous=True,
+            evidence="Flexible, depends on the company",
+        )
+    )
+
+    result = controller.process(state, interpretation)
+
+    assert result.response_plan is not None
+    assert result.response_plan.kind is ResponseKind.CLARIFICATION
+    assert "flexible" in result.assistant_message.casefold()
+    assert "schedule" in result.assistant_message.casefold()
+
+
+def test_needs_review_names_the_field_that_could_not_be_confirmed(
+    service_area_matcher: ServiceAreaMatcher,
+) -> None:
+    controller = ConversationController(ScreeningEngine(), service_area_matcher)
+    state = ScreeningState.empty(Language.EN).model_copy(
+        update={"current_field": ScreeningField.DELIVERY_EXPERIENCE}
+    )
+    invalid = TurnInterpretation(
+        delivery_experience=ExtractedDeliveryExperience(
+            years=None, platforms=["Uber"], provided=True, ambiguous=True
+        )
+    )
+
+    first = controller.process(state, invalid)
+    second = controller.process(first.state, invalid)
+
+    assert second.decision.status is ScreeningStatus.NEEDS_REVIEW
+    assert "delivery experience" in second.assistant_message.casefold()

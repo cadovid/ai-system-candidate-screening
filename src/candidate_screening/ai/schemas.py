@@ -99,6 +99,9 @@ class TurnInterpretation(AIModel):
     disclosure_acknowledged: bool | None = None
     confirmation: bool | None = None
     final_confirmation: bool | None = None
+    # True only when the candidate explicitly says they have no more
+    # questions after the post-screening FAQ offer.
+    faq_complete: bool | None = None
     full_name: ExtractedValue[str] | None = None
     drivers_license: ExtractedValue[bool] | None = None
     location: ExtractedLocation | None = None

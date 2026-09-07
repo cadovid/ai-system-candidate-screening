@@ -11,7 +11,8 @@
       "mañana",
       "3 años en Glovo",
       "lo antes posible",
-      "sí"
+      "sí",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -122,7 +123,8 @@
       "next week",
       "Actually, my full name is Elena Jones",
       "yes",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -170,7 +172,8 @@
       "flexible",
       "4 years on Uber Eats",
       "ASAP",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -208,7 +211,8 @@
     "language": "en",
     "turns": [
       "Name: Isla Morgan; licence: yes; location: Valencia centro; availability: full time; schedule: afternoon; experience: 5 years Deliveroo; start: next month",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -241,7 +245,8 @@
       "morning",
       "3 years",
       "ASAP",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -270,7 +275,8 @@
       "evening",
       "3 years con Glovo",
       "ASAP",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -309,7 +315,8 @@
     "turns": [
       "Name: Marta López; licence: yes; location: Málaga centro; availability: part time; schedule: flexible; experience: 1 year; start: ASAP",
       "Name: Marta López; licence: yes; location: Málaga centro; availability: part time; schedule: flexible; experience: 1 year; start: ASAP",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -367,7 +374,8 @@
       "morning",
       "2 years",
       "ASAP",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -397,7 +405,8 @@
       "ASAP",
       "Actually, my full name is Riley Jones",
       "no",
-      "yes"
+      "yes",
+      "No"
     ],
     "expected": {
       "status": "qualified",
@@ -425,5 +434,111 @@
       "canonical_fields": {"full_name": null, "current_field": "full_name"}
     },
     "tags": ["faq", "unsupported-question"]
+  },
+  {
+    "id": "natural_language_multi_field",
+    "description": "Natural candidate phrasing supplies each field without labels or semicolon syntax.",
+    "language": "en",
+    "turns": [
+      "My full name is Priya Shah",
+      "Yes, I have a current driver's licence",
+      "I live in Barcelona Eixample",
+      "I can work full time",
+      "I prefer afternoon shifts",
+      "I have delivered for 4 years with Uber Eats",
+      "I can start next month",
+      "yes",
+      "No"
+    ],
+    "expected": {
+      "status": "qualified",
+      "reason_codes": ["all_explicit_criteria_met"],
+      "language": "en",
+      "canonical_fields": {
+        "full_name": "Priya Shah",
+        "drivers_license": true,
+        "location.service_area_id": "es-bcn-eixample",
+        "availability": ["full_time"],
+        "preferred_schedule": "afternoon",
+        "delivery_experience.years": 4.0,
+        "delivery_experience.platforms": ["Uber Eats"],
+        "start_availability.precision": "month",
+        "candidate_confirmed": true
+      }
+    },
+    "tags": ["natural-language", "multi-field", "qualification"]
+  },
+  {
+    "id": "natural_language_correction",
+    "description": "A conversational correction phrase is held for confirmation before replacing the trusted name.",
+    "language": "en",
+    "turns": [
+      "Priya Shah",
+      "yes",
+      "Barcelona Eixample",
+      "full time",
+      "afternoon",
+      "4 years with Uber Eats",
+      "next month",
+      "Actually, I need to correct my full name: Priya Jones",
+      "yes",
+      "yes",
+      "No"
+    ],
+    "expected": {
+      "status": "qualified",
+      "reason_codes": ["all_explicit_criteria_met"],
+      "language": "en",
+      "canonical_fields": {
+        "full_name": "Priya Jones",
+        "candidate_confirmed": true,
+        "pending_confirmation": null
+      },
+      "correction": {"field": "full_name", "confirmed": true}
+    },
+    "tags": ["natural-language", "correction", "confirmation"]
+  },
+  {
+    "id": "faq_spanish_then_answer",
+    "description": "A Spanish FAQ phrase is answered before a natural Spanish name answer resumes screening.",
+    "language": "es",
+    "turns": [
+      "¿Qué horarios hay disponibles?",
+      "Me llamo Sofía Martín"
+    ],
+    "expected": {
+      "status": "in_progress",
+      "reason_codes": ["required_information_missing"],
+      "language": "es",
+      "faq_answered": true,
+      "faq_contains": ["Mañana"],
+      "canonical_fields": {
+        "full_name": "Sofía Martín",
+        "current_field": "drivers_license"
+      }
+    },
+    "tags": ["natural-language", "faq", "spanish", "interruption"]
+  },
+  {
+    "id": "natural_ambiguous_location",
+    "description": "A natural location sentence preserves the known city ambiguity instead of selecting a zone.",
+    "language": "en",
+    "turns": [
+      "Taylor Reed",
+      "yes",
+      "I can deliver in Madrid"
+    ],
+    "expected": {
+      "status": "in_progress",
+      "reason_codes": ["ambiguous_location"],
+      "language": "en",
+      "canonical_fields": {
+        "full_name": "Taylor Reed",
+        "drivers_license": true,
+        "location.match_status": "ambiguous",
+        "location.confirmed": false
+      }
+    },
+    "tags": ["natural-language", "ambiguity", "service-area"]
   }
 ]

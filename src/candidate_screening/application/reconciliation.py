@@ -113,6 +113,12 @@ def _set_or_request_confirmation(
 
     if current_value is None or _same_value(current_value, proposed_value):
         return True
+    if state.pending_confirmation is not None and state.pending_confirmation.field is not field:
+        # ScreeningState intentionally stores one visible confirmation action.
+        # Preserve that action rather than replacing it with a second
+        # contradiction; fields without an existing value can still be
+        # applied independently in the same turn.
+        return False
     state.pending_confirmation = PendingConfirmation(
         field=field,
         proposed_value=proposed_value.model_dump(mode="json")
@@ -353,6 +359,7 @@ def _apply_scalar_patch(
     issues: list[ValidationIssue],
     now: datetime,
     message_id: str | None,
+    trusted_fields: set[ScreeningField] | frozenset[ScreeningField] | None = None,
 ) -> None:
     if not patch.provided:
         return
@@ -365,6 +372,30 @@ def _apply_scalar_patch(
         confidence=patch.confidence,
         captured_at=now,
     )
+    # A model-extracted negative answer to a disqualifying criterion is kept
+    # out of the canonical decision until the candidate confirms it.  The
+    # coordinator passes an explicit (possibly empty) trust set for provider
+    # interpretations; ``None`` preserves the lower-level reconciliation API's
+    # legacy behavior for callers that already own a trusted interpretation.
+    if (
+        trusted_fields is not None
+        and field is ScreeningField.DRIVERS_LICENSE
+        and value is False
+        and field not in trusted_fields
+        and current is None
+    ):
+        state.pending_confirmation = PendingConfirmation(
+            field=field,
+            proposed_value=candidate.model_dump(mode="json"),
+            prompt=prompt,
+            reason="decision_impact_confirmation",
+            created_at=now,
+        )
+        state.candidate_confirmed = False
+        issues.append(
+            _issue(field, "confirmation_required", f"{field.value}.confirmation_required")
+        )
+        return
     if not _set_or_request_confirmation(
         state,
         field=field,
@@ -397,6 +428,7 @@ def reconcile_interpretation(
     service_area_matcher: ServiceAreaMatcher,
     now: datetime | None = None,
     message_id: str | None = None,
+    trusted_fields: set[ScreeningField] | frozenset[ScreeningField] | None = None,
 ) -> ReconciliationResult:
     """Reconcile one structured interpretation without trusting its status.
 
@@ -443,6 +475,7 @@ def reconcile_interpretation(
 
     pending_unresolved = False
     pending_location_applied = False
+    blocked_fields: set[ScreeningField] = set()
 
     # The browser language selector sends an explicit language-only
     # interpretation.  It is a control event, not an unanswered candidate
@@ -452,6 +485,7 @@ def reconcile_interpretation(
         interpretation.explicit_language is not None
         and interpretation.confirmation is None
         and interpretation.final_confirmation is None
+        and interpretation.faq_complete is None
         and interpretation.full_name is None
         and interpretation.drivers_license is None
         and interpretation.location is None
@@ -466,9 +500,11 @@ def reconcile_interpretation(
 
     if next_state.pending_confirmation is not None:
         pending = next_state.pending_confirmation
+        pending_field = pending.field
         if interpretation.confirmation is True:
             changed.extend(_apply_pending(next_state, timestamp))
             pending_location_applied = pending.field is ScreeningField.LOCATION
+            blocked_fields.discard(pending_field)
         elif interpretation.confirmation is False:
             # A one-item fuzzy suggestion keeps the unresolved match and
             # evidence in canonical state while awaiting confirmation.  On a
@@ -499,6 +535,7 @@ def reconcile_interpretation(
             next_state.pending_confirmation = None
             next_state.candidate_confirmed = False
             pending_location_applied = pending.field is ScreeningField.LOCATION
+            blocked_fields.discard(pending_field)
         elif (
             pending.field is ScreeningField.LOCATION
             and pending.reason == "service_area_city"
@@ -546,6 +583,7 @@ def reconcile_interpretation(
             else:
                 pending_unresolved = True
             if pending_unresolved:
+                blocked_fields.add(pending_field)
                 issues.append(
                     _issue(
                         ScreeningField.LOCATION,
@@ -555,6 +593,7 @@ def reconcile_interpretation(
                 )
         else:
             pending_unresolved = True
+            blocked_fields.add(pending_field)
             issues.append(
                 _issue(
                     next_state.pending_confirmation.field,
@@ -563,9 +602,10 @@ def reconcile_interpretation(
                 )
             )
 
-    # Do not allow a model to stack another correction on a pending one.  The
-    # candidate must resolve the trusted proposal first.
-    if not pending_unresolved and interpretation.full_name is not None:
+    # A pending proposal blocks only its own field.  Independent fields in the
+    # same message remain reconciliable; otherwise a correction to a name (or
+    # a city offer) could silently discard a valid licence/availability answer.
+    if ScreeningField.FULL_NAME not in blocked_fields and interpretation.full_name is not None:
         patch = interpretation.full_name
         _apply_scalar_patch(
             next_state,
@@ -578,8 +618,12 @@ def reconcile_interpretation(
             issues=issues,
             now=timestamp,
             message_id=message_id,
+            trusted_fields=trusted_fields,
         )
-    if not pending_unresolved and interpretation.drivers_license is not None:
+    if (
+        ScreeningField.DRIVERS_LICENSE not in blocked_fields
+        and interpretation.drivers_license is not None
+    ):
         patch = interpretation.drivers_license
         _apply_scalar_patch(
             next_state,
@@ -592,8 +636,12 @@ def reconcile_interpretation(
             issues=issues,
             now=timestamp,
             message_id=message_id,
+            trusted_fields=trusted_fields,
         )
-    if not pending_unresolved and interpretation.availability is not None:
+    if (
+        ScreeningField.AVAILABILITY not in blocked_fields
+        and interpretation.availability is not None
+    ):
         patch = interpretation.availability
         _apply_scalar_patch(
             next_state,
@@ -606,8 +654,12 @@ def reconcile_interpretation(
             issues=issues,
             now=timestamp,
             message_id=message_id,
+            trusted_fields=trusted_fields,
         )
-    if not pending_unresolved and interpretation.preferred_schedule is not None:
+    if (
+        ScreeningField.PREFERRED_SCHEDULE not in blocked_fields
+        and interpretation.preferred_schedule is not None
+    ):
         patch = interpretation.preferred_schedule
         _apply_scalar_patch(
             next_state,
@@ -620,10 +672,11 @@ def reconcile_interpretation(
             issues=issues,
             now=timestamp,
             message_id=message_id,
+            trusted_fields=trusted_fields,
         )
 
     if (
-        not pending_unresolved
+        ScreeningField.LOCATION not in blocked_fields
         and not pending_location_applied
         and interpretation.location is not None
         and interpretation.location.provided
@@ -778,6 +831,30 @@ def reconcile_interpretation(
                         "location.clarification_required",
                     )
                 )
+            elif (
+                trusted_fields is not None
+                and match.status is LocationMatchStatus.UNSUPPORTED
+                and ScreeningField.LOCATION not in trusted_fields
+            ):
+                # Unsupported location is a decision-impacting model claim.
+                # Keep it as a candidate proposal until the user confirms it;
+                # deterministic shortcuts may explicitly mark LOCATION as
+                # trusted and retain the historical direct-reconciliation path.
+                next_state.pending_confirmation = PendingConfirmation(
+                    field=ScreeningField.LOCATION,
+                    proposed_value=location.model_dump(mode="json"),
+                    prompt="¿Confirmas esta zona? / Please confirm this service area.",
+                    reason="decision_impact_confirmation",
+                    created_at=timestamp,
+                )
+                next_state.candidate_confirmed = False
+                issues.append(
+                    _issue(
+                        ScreeningField.LOCATION,
+                        "confirmation_required",
+                        "location.confirmation_required",
+                    )
+                )
             elif not _set_or_request_confirmation(
                 next_state,
                 field=ScreeningField.LOCATION,
@@ -812,7 +889,7 @@ def reconcile_interpretation(
                 next_state.candidate_confirmed = False
 
     if (
-        not pending_unresolved
+        ScreeningField.DELIVERY_EXPERIENCE not in blocked_fields
         and interpretation.delivery_experience is not None
         and interpretation.delivery_experience.provided
     ):
@@ -857,7 +934,7 @@ def reconcile_interpretation(
                 )
 
     if (
-        not pending_unresolved
+        ScreeningField.START_AVAILABILITY not in blocked_fields
         and interpretation.start_availability is not None
         and interpretation.start_availability.provided
     ):
@@ -905,6 +982,12 @@ def reconcile_interpretation(
 
     if interpretation.final_confirmation is not None:
         next_state.candidate_confirmed = interpretation.final_confirmation
+    if next_state.faq_offer_made and interpretation.faq_complete is not None:
+        next_state.faq_completed = interpretation.faq_complete
+    if changed and next_state.faq_offer_made:
+        # A correction reopens final review before the FAQ closing phase.
+        next_state.faq_offer_made = False
+        next_state.faq_completed = False
     next_state.current_field = None
     return ReconciliationResult(
         next_state, changed_fields=list(dict.fromkeys(changed)), issues=issues

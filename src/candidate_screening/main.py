@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import __version__
-from .ai.interpreter import InterpreterResult
+from .ai.interpreter import AIProviderError, InterpreterResult
 from .ai.pydantic_ai import PydanticAIInterpreter, SummaryGenerator
 from .api.limits import SlidingWindowRateLimiter, TurnConcurrencyLimit
 from .api.middleware import CorrelationMiddleware, RequestLimitsMiddleware
@@ -45,7 +45,7 @@ class _UnavailableInterpreter:
     async def interpret(
         self, message: str, dependencies: Any, *, message_history: Any = ()
     ) -> InterpreterResult:
-        raise RuntimeError("provider is not configured")
+        raise AIProviderError("unavailable")
 
 
 def _build_default_coordinator(app: FastAPI, settings: Settings) -> TurnCoordinator:

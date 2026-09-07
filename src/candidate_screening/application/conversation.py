@@ -6,14 +6,27 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from candidate_screening.ai.schemas import TurnInterpretation
-from candidate_screening.domain.enums import Language, ScreeningField, ScreeningStatus
-from candidate_screening.domain.models import PendingConfirmation, ScreeningDecision, ScreeningState
+from candidate_screening.ai.schemas import TurnIntent, TurnInterpretation
+from candidate_screening.domain.enums import (
+    AvailabilityType,
+    Language,
+    SchedulePreference,
+    ScreeningField,
+    ScreeningStatus,
+)
+from candidate_screening.domain.models import (
+    PendingConfirmation,
+    ScreeningDecision,
+    ScreeningState,
+    ValidationIssue,
+)
 from candidate_screening.domain.rules import ScreeningEngine
 from candidate_screening.domain.service_areas import ServiceAreaMatcher
 
+from .conversation_copy import render_response_plan
 from .faq import FAQCatalog
 from .reconciliation import ReconciliationResult, reconcile_interpretation
+from .response_plan import ResponseKind, ResponsePlan, VariantSelector, random_variant_index
 
 
 @dataclass(slots=True)
@@ -28,28 +41,7 @@ class ConversationTurnResult:
     # Persisted as an operational counter only; the FAQ answer text itself is
     # already part of the assistant message and is never included in metrics.
     faq_answered: bool = False
-
-
-_PROMPTS: dict[Language, dict[ScreeningField, str]] = {
-    Language.ES: {
-        ScreeningField.FULL_NAME: "¿Cuál es tu nombre completo?",
-        ScreeningField.DRIVERS_LICENSE: "¿Tienes una licencia de conducir vigente? Responde sí o no.",
-        ScreeningField.LOCATION: "¿En qué ciudad y zona te gustaría repartir?",
-        ScreeningField.AVAILABILITY: "¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de semana?",
-        ScreeningField.PREFERRED_SCHEDULE: "¿Qué horario prefieres: mañana, tarde, noche o flexible?",
-        ScreeningField.DELIVERY_EXPERIENCE: "¿Cuántos años de experiencia en reparto tienes? Si quieres, indica también las plataformas.",
-        ScreeningField.START_AVAILABILITY: "¿Cuándo podrías empezar?",
-    },
-    Language.EN: {
-        ScreeningField.FULL_NAME: "What is your full name?",
-        ScreeningField.DRIVERS_LICENSE: "Do you have a valid driver's licence? Please answer yes or no.",
-        ScreeningField.LOCATION: "Which city and area would you like to deliver in?",
-        ScreeningField.AVAILABILITY: "Are you looking for full-time, part-time, or weekend work?",
-        ScreeningField.PREFERRED_SCHEDULE: "Which schedule do you prefer: morning, afternoon, evening, or flexible?",
-        ScreeningField.DELIVERY_EXPERIENCE: "How many years of delivery experience do you have? You can also name platforms.",
-        ScreeningField.START_AVAILABILITY: "When could you start?",
-    },
-}
+    response_plan: ResponsePlan | None = None
 
 
 class ConversationController:
@@ -62,6 +54,7 @@ class ConversationController:
         *,
         max_clarifications: int = 2,
         faq_catalog: FAQCatalog | None = None,
+        variant_selector: VariantSelector | None = None,
     ) -> None:
         if max_clarifications < 1:
             raise ValueError("max_clarifications must be at least one")
@@ -69,6 +62,120 @@ class ConversationController:
         self.service_area_matcher = service_area_matcher
         self.max_clarifications = max_clarifications
         self.faq_catalog = faq_catalog
+        # Copy varies between live turns, while tests can inject a deterministic
+        # selector. The selected assistant message is persisted, so retries and
+        # conversation recovery never redraw a different variant.
+        self.variant_selector = variant_selector or random_variant_index
+
+    def _response_plan(
+        self,
+        kind: ResponseKind,
+        *,
+        language: Language,
+        state: ScreeningState,
+        decision: ScreeningDecision | None = None,
+        field: ScreeningField | None = None,
+        pending: PendingConfirmation | None = None,
+        faq_answer: str | None = None,
+        extra_context: dict[str, Any] | None = None,
+    ) -> ResponsePlan:
+        context: dict[str, Any] = {}
+        if extra_context:
+            context.update(extra_context)
+        if decision is not None and "outside_service_area" in decision.reason_codes:
+            location = state.location
+            context["raw_value"] = location.raw_value or location.matched_name
+            context["city"] = location.city
+            context["zones"] = [
+                area.zone
+                for area_id in location.suggestion_ids
+                if (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
+            ]
+        if pending is not None and pending.reason == "service_area_city":
+            proposed = pending.proposed_value
+            if isinstance(proposed, dict):
+                proposed_mapping = cast(dict[str, Any], proposed)
+                context["city"] = proposed_mapping.get("city")
+                context["zones"] = [
+                    area.zone
+                    for area_id in proposed_mapping.get("service_area_ids", [])
+                    if isinstance(area_id, str)
+                    and (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
+                ]
+        return ResponsePlan(
+            kind=kind,
+            language=language,
+            field=field,
+            pending=pending,
+            decision=decision,
+            state=state,
+            faq_answer=faq_answer,
+            variant_key=f"{kind.value}:{language.value}:{field.value if field else ''}",
+            context=context,
+        )
+
+    @staticmethod
+    def _understood_context(
+        interpretation: TurnInterpretation,
+        field: ScreeningField | None,
+    ) -> dict[str, Any]:
+        """Return safe, typed evidence useful for a candidate clarification.
+
+        Only values already represented by the structured interpretation are
+        rendered. Raw model prose and hidden reasoning never become response
+        copy. Ambiguous values may still be described as "heard"; Python
+        validation remains responsible for deciding whether they are accepted.
+        """
+
+        if field is None:
+            return {}
+        patch = getattr(interpretation, field.value, None)
+        if patch is None or not getattr(patch, "provided", False):
+            return {}
+
+        understood: str | None = None
+        if field is ScreeningField.FULL_NAME and isinstance(patch.value, str):
+            understood = f"your name as {patch.value.strip()}"
+        elif field is ScreeningField.DRIVERS_LICENSE and isinstance(patch.value, bool):
+            understood = (
+                "that you have a valid driver's licence"
+                if patch.value
+                else "that you do not have a valid driver's licence"
+            )
+        elif field is ScreeningField.AVAILABILITY and patch.value:
+            labels = {
+                AvailabilityType.FULL_TIME: "full-time availability",
+                AvailabilityType.PART_TIME: "part-time availability",
+                AvailabilityType.WEEKENDS: "weekend availability",
+            }
+            values = [labels.get(value, str(value)) for value in patch.value]
+            understood = " or ".join(values)
+        elif field is ScreeningField.PREFERRED_SCHEDULE and isinstance(
+            patch.value, SchedulePreference
+        ):
+            understood = f"a {patch.value.value.replace('_', ' ')} schedule"
+        elif field is ScreeningField.LOCATION:
+            location_value = patch.raw_value or " ".join(
+                value for value in (patch.city, patch.zone) if value
+            )
+            if location_value:
+                understood = f"the location {location_value.strip()}"
+        elif field is ScreeningField.DELIVERY_EXPERIENCE:
+            parts: list[str] = []
+            if patch.years is not None:
+                years = int(patch.years) if patch.years.is_integer() else patch.years
+                parts.append(f"{years} year{'s' if years != 1 else ''} of delivery experience")
+            if patch.platforms:
+                parts.append("experience with " + ", ".join(patch.platforms[:3]))
+            if parts:
+                understood = " and ".join(parts)
+        elif field is ScreeningField.START_AVAILABILITY and patch.raw_value:
+            understood = f"that you could start {patch.raw_value.strip()}"
+
+        return {"understood": understood} if understood else {}
+
+    def _render(self, plan: ResponsePlan) -> str:
+        return render_response_plan(plan, selector=self.variant_selector)
 
     @staticmethod
     def introduction(language: Language = Language.ES) -> str:
@@ -93,6 +200,7 @@ class ConversationController:
         faq_answer: str | None = None,
         now: datetime | None = None,
         message_id: str | None = None,
+        trusted_fields: set[ScreeningField] | frozenset[ScreeningField] | None = None,
     ) -> ConversationTurnResult:
         timestamp = now or datetime.now(UTC)
         reconciliation: ReconciliationResult = reconcile_interpretation(
@@ -101,6 +209,7 @@ class ConversationController:
             service_area_matcher=self.service_area_matcher,
             now=timestamp,
             message_id=message_id,
+            trusted_fields=trusted_fields,
         )
         next_state = reconciliation.state
         language = next_state.preferred_language
@@ -116,38 +225,164 @@ class ConversationController:
                 reason_codes=["candidate_opted_out"],
                 ruleset_version=next_state.ruleset_version,
             )
+            plan = self._response_plan(
+                ResponseKind.OPT_OUT,
+                language=language,
+                state=next_state,
+                decision=decision,
+            )
             return ConversationTurnResult(
                 next_state,
                 decision,
-                self._opt_out_message(language),
+                self._render(plan),
                 changed_fields=reconciliation.changed_fields,
                 security_event=reconciliation.security_event,
                 opt_out=True,
+                response_plan=plan,
             )
 
         if reconciliation.security_event:
             decision = self.screening_engine.evaluate(next_state)
+            kind = (
+                ResponseKind.SENSITIVE
+                if interpretation.sensitive_data_detected
+                else ResponseKind.SECURITY
+            )
+            next_field = next_state.current_field or self.screening_engine.next_field(next_state)
+            plan = self._response_plan(
+                kind,
+                language=language,
+                state=next_state,
+                decision=decision,
+                field=next_field,
+            )
             return ConversationTurnResult(
                 next_state,
                 decision,
-                (
-                    self._sensitive_message(language, next_state)
-                    if interpretation.sensitive_data_detected
-                    else self._security_message(language, next_state)
-                ),
-                next_field=next_state.current_field or self.screening_engine.next_field(next_state),
+                self._render(plan),
+                next_field=next_field,
                 changed_fields=reconciliation.changed_fields,
                 security_event=True,
+                response_plan=plan,
             )
 
         decision = self.screening_engine.evaluate(next_state)
+
+        if decision.status is ScreeningStatus.QUALIFIED and not next_state.faq_completed:
+            workflow_decision = decision.model_copy(
+                update={
+                    "status": ScreeningStatus.IN_PROGRESS,
+                    "reason_codes": ["awaiting_candidate_questions"],
+                    "rule_trace": {
+                        **decision.rule_trace,
+                        "conversation_rule": "post_screening_faq",
+                        "eligibility_status": ScreeningStatus.QUALIFIED.value,
+                    },
+                }
+            )
+            offer_was_already_made = next_state.faq_offer_made
+            next_state.faq_offer_made = True
+            next_state.current_field = None
+            has_question = bool(interpretation.candidate_questions)
+            plan = self._response_plan(
+                (
+                    ResponseKind.FAQ_FOLLOWUP
+                    if offer_was_already_made or has_question
+                    else ResponseKind.FAQ_OFFER
+                ),
+                language=language,
+                state=next_state,
+                decision=workflow_decision,
+                faq_answer=faq_answer,
+                extra_context={"has_question": has_question},
+            )
+            return ConversationTurnResult(
+                next_state,
+                workflow_decision,
+                self._render(plan),
+                next_field=None,
+                changed_fields=reconciliation.changed_fields,
+                faq_answered=bool(faq_answer),
+                response_plan=plan,
+            )
+
+        response_issues = list(reconciliation.issues)
+        countable_issues = list(response_issues)
+        # A question/off-topic intent is a detour only when the model supplied
+        # an actual candidate question or explicitly marked the turn off-topic.
+        # A provider can otherwise label an answer such as "Flexible, depends
+        # on the company" as a question while omitting the field patch; that
+        # must become a field clarification, not the same prompt again.
+        conversational_control = interpretation.intent is TurnIntent.OFF_TOPIC or (
+            interpretation.intent in {TurnIntent.QUESTION, TurnIntent.MIXED}
+            and bool(interpretation.candidate_questions)
+        )
+        if conversational_control:
+            # Questions/social detours are answered or bounded and then bridge
+            # back to the active field; they are not failed candidate answers.
+            countable_issues = []
+
+        # A valid-shaped answer that changes no canonical value is itself a
+        # field-specific clarification opportunity.  Avoid doing this for
+        # language selectors, FAQ/social turns, explicit confirmation events,
+        # and pending city/correction prompts that already have an issue.
+        no_effect_field = None
+        has_candidate_patch = any(
+            patch is not None
+            for patch in (
+                interpretation.full_name,
+                interpretation.drivers_license,
+                interpretation.location,
+                interpretation.availability,
+                interpretation.preferred_schedule,
+                interpretation.delivery_experience,
+                interpretation.start_availability,
+            )
+        )
+        language_only = (
+            interpretation.explicit_language is not None
+            and not has_candidate_patch
+            and interpretation.confirmation is None
+            and interpretation.final_confirmation is None
+            and not interpretation.candidate_questions
+        )
+        if (
+            not response_issues
+            and decision.status is ScreeningStatus.IN_PROGRESS
+            and not reconciliation.changed_fields
+            and not next_state.pending_confirmation
+            and not conversational_control
+            and not language_only
+            and interpretation.disclosure_acknowledged is not True
+            and interpretation.confirmation is None
+            and interpretation.final_confirmation is None
+            and (
+                interpretation.intent
+                in {TurnIntent.ANSWER, TurnIntent.CORRECTION, TurnIntent.UNKNOWN}
+                or (
+                    interpretation.intent in {TurnIntent.QUESTION, TurnIntent.MIXED}
+                    and not interpretation.candidate_questions
+                )
+            )
+        ):
+            no_effect_field = next_state.current_field or self.screening_engine.next_field(
+                next_state
+            )
+            if no_effect_field is not None:
+                response_issues.append(
+                    ValidationIssue(
+                        field=no_effect_field,
+                        code="no_effect_answer",
+                        message_key=f"{no_effect_field.value}.clarification_required",
+                    )
+                )
+                countable_issues = list(response_issues)
+
         # Clarification attempts are state, not model judgment.  Once the
         # configured bound is exhausted, hand the case to a recruiter while
         # retaining the last trusted canonical values.
-        if reconciliation.issues:
-            issue_fields = {
-                issue.field for issue in reconciliation.issues if issue.field is not None
-            }
+        if countable_issues:
+            issue_fields = {issue.field for issue in countable_issues if issue.field is not None}
             for issue_field in issue_fields:
                 count = next_state.clarification_counts.get(issue_field, 0) + 1
                 next_state.clarification_counts[issue_field] = count
@@ -160,7 +395,7 @@ class ConversationController:
                     status=ScreeningStatus.NEEDS_REVIEW,
                     reason_codes=["retry_limit"],
                     missing_fields=decision.missing_fields,
-                    issues=reconciliation.issues,
+                    issues=response_issues,
                     ruleset_version=next_state.ruleset_version,
                     rule_trace={
                         **decision.rule_trace,
@@ -171,246 +406,107 @@ class ConversationController:
                         },
                     },
                 )
+        for changed_field in reconciliation.changed_fields:
+            # Resolution starts a fresh clarification budget for that field.
+            next_state.clarification_counts[changed_field] = 0
         if decision.status is ScreeningStatus.DISQUALIFIED:
+            plan = self._response_plan(
+                ResponseKind.DISQUALIFIED,
+                language=language,
+                state=next_state,
+                decision=decision,
+            )
             return ConversationTurnResult(
                 next_state,
                 decision,
-                self._disqualification_message(language, decision, next_state),
+                self._render(plan),
                 changed_fields=reconciliation.changed_fields,
+                response_plan=plan,
             )
         if decision.status is ScreeningStatus.QUALIFIED:
+            plan = self._response_plan(
+                ResponseKind.QUALIFIED,
+                language=language,
+                state=next_state,
+                decision=decision,
+            )
             return ConversationTurnResult(
                 next_state,
                 decision,
-                self._qualified_message(language),
+                self._render(plan),
                 changed_fields=reconciliation.changed_fields,
+                response_plan=plan,
             )
         if "retry_limit" in decision.reason_codes:
+            review_field = next(
+                (issue.field for issue in response_issues if issue.field is not None),
+                next_state.current_field,
+            )
+            plan = self._response_plan(
+                ResponseKind.NEEDS_REVIEW,
+                language=language,
+                state=next_state,
+                decision=decision,
+                field=review_field,
+                extra_context=self._understood_context(interpretation, review_field),
+            )
             return ConversationTurnResult(
                 next_state,
                 decision,
-                self._review_message(language),
+                self._render(plan),
                 changed_fields=reconciliation.changed_fields,
+                response_plan=plan,
             )
 
-        if reconciliation.issues:
-            field = reconciliation.issues[0].field or self.screening_engine.next_field(next_state)
+        if response_issues:
+            field = response_issues[0].field or self.screening_engine.next_field(next_state)
             if field is not None:
                 next_state.current_field = field
-            if next_state.pending_confirmation is not None:
-                # Keep an explicit confirmation action visible after a
-                # correction, fuzzy location, city-level offer, or
-                # question-only reply. A generic clarification would hide the
-                # yes/no action the candidate still needs to resolve.
-                prompt = self._pending_prompt(language, next_state.pending_confirmation)
-            else:
-                prompt = self._clarification(language, field)
+            kind = (
+                ResponseKind.PENDING_CONFIRMATION
+                if next_state.pending_confirmation is not None
+                else ResponseKind.CLARIFICATION
+            )
         elif next_state.pending_confirmation is not None:
             next_state.current_field = next_state.pending_confirmation.field
-            prompt = self._pending_prompt(language, next_state.pending_confirmation)
+            field = next_state.current_field
+            kind = ResponseKind.PENDING_CONFIRMATION
         else:
             field = self.screening_engine.next_field(next_state)
             next_state.current_field = field
-            prompt = self._confirmation(language) if field is None else _PROMPTS[language][field]
+            kind = ResponseKind.FINAL_CONFIRMATION if field is None else ResponseKind.PROMPT
 
         if faq_answer:
-            prompt = f"{faq_answer.strip()}\n\n{prompt}"
+            if kind not in {ResponseKind.PENDING_CONFIRMATION, ResponseKind.CLARIFICATION}:
+                kind = ResponseKind.FAQ_BRIDGE
         elif (
-            interpretation.intent.name in {"QUESTION", "MIXED", "OFF_TOPIC"}
+            interpretation.intent in {TurnIntent.QUESTION, TurnIntent.MIXED, TurnIntent.OFF_TOPIC}
             and interpretation.response_requested
+            and conversational_control
         ):
-            prompt = f"{self._unknown_question(language)}\n\n{prompt}"
+            kind = ResponseKind.UNKNOWN_QUESTION
+        plan = self._response_plan(
+            kind,
+            language=language,
+            state=next_state,
+            decision=decision,
+            field=field,
+            pending=next_state.pending_confirmation,
+            faq_answer=faq_answer,
+            extra_context=(
+                self._understood_context(interpretation, field)
+                if kind is ResponseKind.CLARIFICATION
+                else None
+            ),
+        )
 
         return ConversationTurnResult(
             next_state,
             decision,
-            prompt,
+            self._render(plan),
             next_field=next_state.current_field,
             changed_fields=reconciliation.changed_fields,
             security_event=reconciliation.security_event,
             faq_answered=bool(faq_answer),
-        )
-
-    @staticmethod
-    def _confirmation(language: Language) -> str:
-        if language is Language.EN:
-            return "Please review the information above. Is everything correct?"
-        return "Revisa la información anterior. ¿Es todo correcto?"
-
-    @staticmethod
-    def _clarification(language: Language, field: ScreeningField | None) -> str:
-        if field is ScreeningField.LOCATION:
-            return (
-                "Could you specify the city and service area more precisely?"
-                if language is Language.EN
-                else "¿Puedes indicar la ciudad y la zona de servicio con más precisión?"
-            )
-        if field is ScreeningField.DRIVERS_LICENSE:
-            return (
-                "Please answer yes or no about your valid driver's licence."
-                if language is Language.EN
-                else "Responde sí o no sobre si tienes una licencia de conducir vigente."
-            )
-        if field is ScreeningField.DELIVERY_EXPERIENCE:
-            return (
-                "Please provide the number of years of delivery experience."
-                if language is Language.EN
-                else "Indica cuántos años de experiencia en reparto tienes."
-            )
-        if field is ScreeningField.START_AVAILABILITY:
-            return (
-                "What date or time period could you start?"
-                if language is Language.EN
-                else "¿En qué fecha o periodo podrías empezar?"
-            )
-        return (
-            "Could you clarify that answer?"
-            if language is Language.EN
-            else "¿Puedes aclarar esa respuesta?"
-        )
-
-    @staticmethod
-    def _qualified_message(language: Language) -> str:
-        return (
-            "Thanks! Your screening information meets the stated requirements. A recruiter will review it and contact you about next steps."
-            if language is Language.EN
-            else "¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos."
-        )
-
-    def _disqualification_message(
-        self,
-        language: Language,
-        decision: ScreeningDecision,
-        state: ScreeningState,
-    ) -> str:
-        if "no_drivers_license" in decision.reason_codes:
-            return (
-                "Thanks for your time. This role requires a valid driver's licence, so we cannot continue this screening."
-                if language is Language.EN
-                else "Gracias por tu tiempo. Este puesto requiere una licencia de conducir vigente, así que no podemos continuar con esta evaluación."
-            )
-        location = state.location
-        raw_value = (
-            location.raw_value or location.matched_name or "the location you provided"
-        ).strip()
-        city = location.city
-        offered_areas = [
-            area
-            for area_id in location.suggestion_ids
-            if (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
-        ]
-        zones = ", ".join(area.zone for area in offered_areas)
-        if city and zones:
-            return (
-                f"Thanks for your time. I understood your location as “{raw_value}” in {city}. "
-                f"The configured delivery areas in {city} are: {zones}. "
-                "Because you cannot deliver in any of those areas, we cannot continue this screening."
-                if language is Language.EN
-                else f"Gracias por tu tiempo. He interpretado tu ubicación como «{raw_value}» en {city}. "
-                f"Las zonas de reparto configuradas en {city} son: {zones}. "
-                "Como no puedes repartir en ninguna de ellas, no podemos continuar con esta evaluación."
-            )
-        return (
-            f"Thanks for your time. I understood your delivery area as “{raw_value}”. "
-            "It is not one of the configured service areas, so we cannot continue this screening."
-            if language is Language.EN
-            else f"Gracias por tu tiempo. He interpretado tu zona de reparto como «{raw_value}». "
-            "No está entre las zonas de servicio configuradas, así que no podemos continuar con esta evaluación."
-        )
-
-    @staticmethod
-    def _opt_out_message(language: Language) -> str:
-        return (
-            "Understood. We’ll close this screening. Thank you for your time."
-            if language is Language.EN
-            else "Entendido. Cerraremos esta evaluación. Gracias por tu tiempo."
-        )
-
-    @staticmethod
-    def _security_message(language: Language, state: ScreeningState) -> str:
-        next_field = state.current_field
-        question = _PROMPTS[language].get(next_field, "") if next_field else ""
-        base = (
-            "I can help with the delivery-driver screening, but I can’t provide internal instructions or change the criteria."
-            if language is Language.EN
-            else "Puedo ayudarte con la evaluación del puesto de repartidor/a, pero no puedo compartir instrucciones internas ni cambiar los criterios."
-        )
-        return f"{base}\n\n{question}" if question else base
-
-    @staticmethod
-    def _sensitive_message(language: Language, state: ScreeningState) -> str:
-        next_field = state.current_field
-        question = _PROMPTS[language].get(next_field, "") if next_field else ""
-        base = (
-            "For your privacy, please do not share passwords, payment details, contact details, or government ID here."
-            if language is Language.EN
-            else "Por tu privacidad, no compartas aquí contraseñas, datos de pago, datos de contacto ni documentos de identidad."
-        )
-        return f"{base}\n\n{question}" if question else base
-
-    @staticmethod
-    def _unknown_question(language: Language) -> str:
-        return (
-            "I don’t have that information, but a recruiter can follow up."
-            if language is Language.EN
-            else "No tengo esa información, pero una persona reclutadora puede ayudarte después."
-        )
-
-    @staticmethod
-    def _review_message(language: Language) -> str:
-        return (
-            "I’m unable to verify that detail after a few attempts. A recruiter will review your application."
-            if language is Language.EN
-            else "No he podido verificar ese dato después de varios intentos. Una persona reclutadora revisará tu solicitud."
-        )
-
-    def _pending_prompt(self, language: Language, pending: PendingConfirmation) -> str:
-        """Render a pending correction/suggestion in the active language."""
-
-        if pending.reason == "service_area_city":
-            proposed = pending.proposed_value
-            proposed_mapping = cast(dict[str, Any], proposed) if isinstance(proposed, dict) else {}
-            city = str(proposed_mapping.get("city") or "the city you provided")
-            area_ids = proposed_mapping.get("service_area_ids", [])
-            zones = [
-                area.zone
-                for area_id in area_ids
-                if isinstance(area_id, str)
-                and (area := self.service_area_matcher.catalog.by_id(area_id)) is not None
-            ]
-            zone_text = ", ".join(zones) or "the configured areas"
-            return (
-                f"I understood {city}. The configured delivery areas in {city} are: {zone_text}. "
-                "Can you deliver in any of these areas? Please answer yes or no."
-                if language is Language.EN
-                else f"He entendido {city}. Las zonas de reparto configuradas en {city} son: {zone_text}. "
-                "¿Puedes repartir en alguna de estas zonas? Responde sí o no."
-            )
-
-        if pending.reason == "service_area_suggestion":
-            proposed = pending.proposed_value
-            proposed_mapping = cast(dict[str, Any], proposed) if isinstance(proposed, dict) else {}
-            name = proposed_mapping.get("matched_name")
-            if name:
-                return (
-                    f"Do you mean {name}? Please answer yes or no."
-                    if language is Language.EN
-                    else f"¿Te refieres a {name}? Responde sí o no."
-                )
-        if pending.field is ScreeningField.LOCATION:
-            return (
-                "Please confirm this service area."
-                if language is Language.EN
-                else "Confirma esta zona de servicio, por favor."
-            )
-        if pending.field is ScreeningField.DRIVERS_LICENSE:
-            return (
-                "Please confirm your driver's licence answer."
-                if language is Language.EN
-                else "Confirma tu respuesta sobre la licencia de conducir."
-            )
-        return (
-            "I heard a different answer. Would you like to replace the previous information?"
-            if language is Language.EN
-            else "He recibido una respuesta distinta. ¿Quieres sustituir la información anterior?"
+            response_plan=plan,
         )

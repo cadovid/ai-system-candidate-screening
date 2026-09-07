@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from pydantic_ai.messages import ModelMessage
@@ -20,10 +21,25 @@ class AIProviderError(RuntimeError):
 
     def __init__(
         self,
-        category: Literal["rate_limited", "unavailable", "invalid_output"] = "unavailable",
+        category: Literal[
+            "rate_limited",
+            "timeout",
+            "unavailable",
+            "invalid_output",
+            "unexpected",
+        ] = "unavailable",
     ) -> None:
         super().__init__("model provider request failed")
         self.category = category
+
+
+class ConversationGoal(StrEnum):
+    """Trusted application-owned purpose of the current candidate turn."""
+
+    COLLECTING = "collecting"
+    PENDING_CONFIRMATION = "pending_confirmation"
+    FINAL_REVIEW = "final_review"
+    POST_SCREENING_FAQ = "post_screening_faq"
 
 
 @dataclass(slots=True)
@@ -36,6 +52,8 @@ class InterpreterDependencies:
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
     local_date: str | None = None
     correlation_id: str | None = None
+    conversation_goal: ConversationGoal = ConversationGoal.COLLECTING
+    goal_retry: bool = False
 
 
 @dataclass(slots=True)

@@ -21,6 +21,7 @@ from candidate_screening.ai.schemas import (
     TurnInterpretation,
 )
 from candidate_screening.application.conversation import ConversationController
+from candidate_screening.application.deterministic_interpretation import recover_location_answer
 from candidate_screening.application.faq import FAQCatalog
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import (
@@ -556,7 +557,12 @@ def _question_or_off_topic(message: str, state: ScreeningState) -> TurnInterpret
     return None
 
 
-def _deterministic_interpretation(message: str, state: ScreeningState) -> TurnInterpretation:
+def _deterministic_interpretation(
+    message: str,
+    state: ScreeningState,
+    *,
+    service_area_matcher: ServiceAreaMatcher | None = None,
+) -> TurnInterpretation:
     """Interpret fixture text into a typed patch, never into a screening decision.
 
     This intentionally small parser supports the reviewable fixtures below:
@@ -588,6 +594,21 @@ def _deterministic_interpretation(message: str, state: ScreeningState) -> TurnIn
             sensitive_data_detected=True,
         )
 
+    # The production location recovery helper safely recognizes an exact
+    # catalogue phrase embedded in otherwise natural prose (for example,
+    # ``I live in Barcelona Eixample``), while rejecting fuzzy or unsupported
+    # guesses. It needs an empty typed result as its input. Other fixture
+    # semantics remain local and deliberately bounded below.
+    if service_area_matcher is not None:
+        recovered = recover_location_answer(
+            state,
+            message,
+            InterpreterResult(interpretation=TurnInterpretation()),
+            service_area_matcher=service_area_matcher,
+        )
+        if recovered.usage.get("deterministic_fallback"):
+            return recovered.interpretation
+
     question = _question_or_off_topic(message, state)
     if question is not None:
         return question
@@ -595,6 +616,18 @@ def _deterministic_interpretation(message: str, state: ScreeningState) -> TurnIn
     common = _common_interpretation(message, state)
     explicit = _explicit_language(message)
     yes_no = _yes_no(message)
+    # Once screening facts are confirmed, an explicit yes/no answers the
+    # post-screening question offer rather than a screening field.  This
+    # deterministic fixture mirrors the production fallback without calling a
+    # provider during the mandatory evaluation suite.
+    if (
+        state.faq_offer_made
+        and state.candidate_confirmed
+        and not state.faq_completed
+        and yes_no is not None
+    ):
+        common["faq_complete"] = not yes_no
+        return TurnInterpretation(**common)
     # A pending proposal is resolved by an explicit yes/no.  This branch is
     # what makes correction and fuzzy-location fixtures exercise the real
     # confirmation path instead of being mistaken for a field answer.
@@ -1090,7 +1123,11 @@ def run_deterministic(
         for message in scenario.turns[: case.max_turns]:
             turns += 1
             try:
-                interpretation = _deterministic_interpretation(message, state)
+                interpretation = _deterministic_interpretation(
+                    message,
+                    state,
+                    service_area_matcher=controller.service_area_matcher,
+                )
                 pending_before = state.pending_confirmation
                 correction_fields.extend(_correction_fields(interpretation))
                 outcome = controller.process(

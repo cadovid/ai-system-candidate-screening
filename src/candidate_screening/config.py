@@ -36,10 +36,12 @@ class Settings(BaseSettings):
         default=None, validation_alias="OPENROUTER_API_KEY"
     )
     groq_api_key: SecretStr | None = Field(default=None, validation_alias="GROQ_API_KEY")
-    # Groq's native client retry budget is intentionally kept at zero in the
-    # adapter.  This is the separate, bounded retry budget for malformed or
-    # otherwise invalid structured output.  The global LLM_MAX_RETRIES value
-    # remains an upper bound for backwards-compatible operator controls.
+    # Groq transport retries handle transient 408/409/429/5xx failures using
+    # the SDK's Retry-After support and jittered exponential backoff. Output
+    # retries remain a separate budget for malformed structured responses.
+    groq_transport_retries: int = Field(
+        default=2, ge=0, le=2, validation_alias="GROQ_TRANSPORT_RETRIES"
+    )
     groq_output_retries: int = Field(default=1, ge=0, le=1, validation_alias="GROQ_OUTPUT_RETRIES")
     groq_reasoning_effort: Literal["low", "medium", "high"] = Field(
         default="low", validation_alias="GROQ_REASONING_EFFORT"
@@ -49,7 +51,16 @@ class Settings(BaseSettings):
     )
     openrouter_zdr: bool = Field(default=True, validation_alias="OPENROUTER_ZDR")
     openrouter_require_parameters: bool = Field(
-        default=False, validation_alias="OPENROUTER_REQUIRE_PARAMETERS"
+        default=True, validation_alias="OPENROUTER_REQUIRE_PARAMETERS"
+    )
+    openrouter_reasoning_effort: Literal["high", "xhigh"] = Field(
+        default="high", validation_alias="OPENROUTER_REASONING_EFFORT"
+    )
+    openrouter_output_retries: int = Field(
+        default=1, ge=0, le=1, validation_alias="OPENROUTER_OUTPUT_RETRIES"
+    )
+    openrouter_timeout_seconds: float = Field(
+        default=60.0, ge=5.0, le=180.0, validation_alias="OPENROUTER_TIMEOUT_SECONDS"
     )
     llm_base_url: str | None = Field(default=None, validation_alias="LLM_BASE_URL")
     llm_timeout_seconds: float = Field(
@@ -97,7 +108,7 @@ class Settings(BaseSettings):
         if not value or ":" not in value:
             raise ValueError(
                 "LLM_MODEL must use a provider:model form, e.g. groq:openai/gpt-oss-20b or "
-                "openrouter:openrouter/free"
+                "openrouter:z-ai/glm-5.2:free"
             )
         provider, model_name = value.split(":", 1)
         if provider.casefold() not in {"openai", "openrouter", "groq"}:

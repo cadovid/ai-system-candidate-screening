@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -27,13 +26,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from candidate_screening.ai.history import HistoryMessage, build_bounded_history
 from candidate_screening.ai.interpreter import (
     AIProviderError,
+    ConversationGoal,
     InterpreterDependencies,
     InterpreterResult,
     LanguageInterpreter,
     SummaryGeneratorProtocol,
 )
 from candidate_screening.ai.schemas import (
-    ExtractedValue,
     TurnIntent,
     TurnInterpretation,
 )
@@ -47,11 +46,14 @@ from candidate_screening.application.conversation import (
     ConversationController,
     ConversationTurnResult,
 )
+from candidate_screening.application.conversation_copy import render_response_plan
 from candidate_screening.application.deterministic_interpretation import (
     interpret_deterministically,
+    is_exact_opt_out,
     recover_location_answer,
 )
 from candidate_screening.application.guardrails import inspect_message, summary_is_safe
+from candidate_screening.application.response_plan import ResponseKind, ResponsePlan
 from candidate_screening.domain.enums import (
     ConversationStatus,
     InteractionMode,
@@ -94,195 +96,6 @@ def hash_resume_token(token: str) -> str:
 
 def _request_hash(message: str) -> str:
     return hashlib.sha256(message.strip().encode("utf-8")).hexdigest()
-
-
-# These are deliberately small, closed vocabularies.  They are used only for
-# unambiguous control answers and never attempt to replace the language model
-# for natural-language extraction.
-_CONFIRMATION_VALUES: dict[str, bool] = {
-    "yes": True,
-    "y": True,
-    "sí": True,
-    "si": True,
-    "true": True,
-    "correct": True,
-    "correcto": True,
-    "vale": True,
-    "no": False,
-    "n": False,
-    "false": False,
-    "nope": False,
-}
-_LICENSE_VALUES: dict[str, bool] = {
-    "yes": True,
-    "y": True,
-    "sí": True,
-    "si": True,
-    "no": False,
-    "n": False,
-    "nope": False,
-}
-_DISCLOSURE_ACKNOWLEDGEMENTS = frozenset(
-    {
-        "yes",
-        "y",
-        "sí",
-        "si",
-        "yes please",
-        "sí por favor",
-        "si por favor",
-        "sure",
-        "okay",
-        "ok",
-        "vale",
-        "de acuerdo",
-        "adelante",
-        "go on",
-        "go ahead",
-        "continue",
-        "let's continue",
-        "lets continue",
-        "start",
-        "start please",
-        "empecemos",
-        "empecemos por favor",
-        "empezamos",
-        "comencemos",
-        "continuar",
-        "continuemos",
-    }
-)
-_NAME_PREFIX = re.compile(
-    r"^(?:my\s+name\s+is|name\s+is|i\s+am|i['’]?m|me\s+llamo|mi\s+nombre\s+es)\s+(.+?)\s*[.!?]?$",
-    re.IGNORECASE,
-)
-_NAME_TOKEN = re.compile(r"^[^\W\d_]+(?:[-'’][^\W\d_]+)*$", re.UNICODE)
-_NON_NAME_TOKENS = frozenset(
-    {
-        "adelante",
-        "and",
-        "area",
-        "at",
-        "available",
-        "años",
-        "año",
-        "begin",
-        "can",
-        "center",
-        "city",
-        "ciudad",
-        "completo",
-        "comencemos",
-        "continue",
-        "continuar",
-        "continuemos",
-        "delivery",
-        "empecemos",
-        "empezamos",
-        "es",
-        "experience",
-        "favor",
-        "fines",
-        "from",
-        "full",
-        "gracias",
-        "go",
-        "have",
-        "has",
-        "home",
-        "interesado",
-        "interested",
-        "is",
-        "live",
-        "lives",
-        "llamo",
-        "licencia",
-        "license",
-        "mi",
-        "my",
-        "name",
-        "no",
-        "on",
-        "ok",
-        "okay",
-        "part",
-        "parcial",
-        "please",
-        "por",
-        "reparto",
-        "schedule",
-        "si",
-        "sí",
-        "start",
-        "sure",
-        "tengo",
-        "thanks",
-        "tiene",
-        "tiempo",
-        "trabajar",
-        "trabajo",
-        "valid",
-        "vigente",
-        "weekends",
-        "years",
-        "y",
-        "zona",
-        "yes",
-        "central",
-        "centro",
-        "east",
-        "este",
-        "north",
-        "norte",
-        "south",
-        "sur",
-        "west",
-        "oeste",
-        "zone",
-    }
-)
-
-
-def _normalize_short_message(message: str) -> str:
-    """Normalize exact control replies without interpreting free-form prose."""
-
-    normalized = re.sub(r"[.,!?;:¡¿]+", " ", message.casefold())
-    return " ".join(normalized.split())
-
-
-def _extract_simple_full_name(message: str) -> str | None:
-    """Return a conservative name-only answer, or ``None`` for free-form text.
-
-    The parser is intentionally limited to a short alphabetic answer (or an
-    explicit name prefix). Bare names must look like a proper-name phrase.
-    Multi-field answers, questions, and prose stay on the model path so this
-    optimization cannot make a business decision from an ambiguous message.
-    """
-
-    collapsed = " ".join(message.split()).strip()
-    prefix_match = _NAME_PREFIX.match(collapsed)
-    candidate = prefix_match.group(1) if prefix_match else collapsed
-    candidate = candidate.strip(" .,!?;:¡¿")
-    if not candidate or any(marker in candidate for marker in (",", ";", "|")):
-        return None
-    words = candidate.split()
-    # A one-word response is too easy to confuse with an acknowledgement or an
-    # unrelated answer. Keep those on the model path even with an explicit
-    # prefix; the existing schema does not require us to guess a full name.
-    if len(words) < 2 or len(words) > 6:
-        return None
-    # An unprefixed answer is treated as a name only when it looks like a
-    # proper-name phrase. This keeps common short prose (for example
-    # ``spoken answer``) and location phrases (for example ``Madrid centro``)
-    # on the model path. Explicit prefixes such as ``Me llamo ...`` may use
-    # normal sentence casing.
-    if prefix_match is None and any(not word[0].isupper() for word in words):
-        return None
-    if any(not _NAME_TOKEN.fullmatch(word) for word in words):
-        return None
-    if any(word.casefold() in _NON_NAME_TOKENS for word in words):
-        return None
-    return candidate[:200]
 
 
 class CoordinatorError(RuntimeError):
@@ -417,6 +230,341 @@ class _Reservation:
     turn_number: int
     turn_limit_reached: bool = False
     started_at: float = field(default_factory=time.monotonic)
+
+
+_INTERPRETATION_PATCH_FIELDS: tuple[str, ...] = (
+    "full_name",
+    "drivers_license",
+    "location",
+    "availability",
+    "preferred_schedule",
+    "delivery_experience",
+    "start_availability",
+)
+_PROTECTED_INTERPRETATION_INTENTS = frozenset(
+    {
+        TurnIntent.QUESTION,
+        TurnIntent.MIXED,
+        TurnIntent.CORRECTION,
+        TurnIntent.OFF_TOPIC,
+        TurnIntent.OPT_OUT,
+        TurnIntent.PROMPT_INJECTION,
+    }
+)
+_MODEL_USAGE_COUNTER_KEYS = frozenset({"input_tokens", "output_tokens", "requests"})
+
+
+def _patch_has_signal(patch: object) -> bool:
+    """Return whether a model patch carries an actionable semantic signal.
+
+    Pydantic fills nested patch objects with defaults when a provider emits a
+    structurally valid but empty result.  Those default objects are not useful
+    interpretation.  Conversely, an explicit ambiguous/correction marker or
+    a value/evidence claim is meaningful and must not be overwritten by a
+    deterministic fallback.
+    """
+
+    if patch is None:
+        return False
+    if any(
+        bool(getattr(patch, attribute, False))
+        for attribute in ("provided", "ambiguous", "correction", "explicit_confirmation")
+    ):
+        return True
+    if getattr(patch, "value", None) is not None:
+        return True
+    if getattr(patch, "years", None) is not None:
+        return True
+    if getattr(patch, "date", None) is not None:
+        return True
+    return any(
+        bool(getattr(patch, attribute, None))
+        for attribute in ("raw_value", "city", "zone", "evidence", "platforms")
+    )
+
+
+def _interpretation_has_correction(interpretation: TurnInterpretation) -> bool:
+    return interpretation.intent is TurnIntent.CORRECTION or any(
+        patch is not None and bool(getattr(patch, "correction", False))
+        for patch in (
+            interpretation.full_name,
+            interpretation.drivers_license,
+            interpretation.location,
+            interpretation.availability,
+            interpretation.preferred_schedule,
+            interpretation.delivery_experience,
+            interpretation.start_availability,
+        )
+    )
+
+
+def _normalize_goal_control(
+    interpretation: TurnInterpretation,
+    goal: ConversationGoal,
+) -> TurnInterpretation:
+    """Resolve control aliases and discard canonical echoes for control goals."""
+
+    updates: dict[str, Any] = {}
+    if (
+        goal is ConversationGoal.FINAL_REVIEW
+        and interpretation.final_confirmation is None
+        and interpretation.confirmation is not None
+    ):
+        updates["final_confirmation"] = interpretation.confirmation
+    if (
+        goal is ConversationGoal.POST_SCREENING_FAQ
+        and interpretation.faq_complete is None
+        and interpretation.confirmation is not None
+    ):
+        # The question asks whether the candidate has more questions, so a
+        # negative generic confirmation means the FAQ phase is complete.
+        updates["faq_complete"] = not interpretation.confirmation
+
+    if goal in {ConversationGoal.FINAL_REVIEW, ConversationGoal.POST_SCREENING_FAQ}:
+        # Providers can copy facts from canonical-state context even when the
+        # candidate only answered a control question. Those echoes must not
+        # refresh evidence, reset final confirmation, or reopen review.
+        # Explicitly marked corrections remain eligible for reconciliation.
+        for field_name in _INTERPRETATION_PATCH_FIELDS:
+            patch = getattr(interpretation, field_name)
+            if (
+                patch is not None
+                and interpretation.intent is not TurnIntent.CORRECTION
+                and not bool(getattr(patch, "correction", False))
+            ):
+                updates[field_name] = None
+
+    return interpretation.model_copy(update=updates) if updates else interpretation
+
+
+def _conversation_goal(
+    state: ScreeningState,
+    decision: ScreeningDecision,
+) -> ConversationGoal:
+    """Describe the current turn goal without delegating any decision to the model."""
+
+    if state.faq_offer_made and state.candidate_confirmed and not state.faq_completed:
+        return ConversationGoal.POST_SCREENING_FAQ
+    if state.pending_confirmation is not None:
+        return ConversationGoal.PENDING_CONFIRMATION
+    if "awaiting_candidate_confirmation" in decision.reason_codes:
+        return ConversationGoal.FINAL_REVIEW
+    return ConversationGoal.COLLECTING
+
+
+def _interpretation_is_sufficient(
+    interpretation: TurnInterpretation,
+    goal: ConversationGoal = ConversationGoal.COLLECTING,
+) -> bool:
+    """Return whether a valid model response should be used as-is.
+
+    Intentional conversational/security outputs are sufficient even when they
+    do not mutate screening state.  Only a neutral, empty/default extraction
+    is eligible for the narrow deterministic fallback.  This prevents the
+    fallback parser from replacing questions, corrections, ambiguity, or
+    model-detected safety signals.
+    """
+
+    if goal in {ConversationGoal.FINAL_REVIEW, ConversationGoal.POST_SCREENING_FAQ}:
+        if (
+            interpretation.opt_out_requested
+            or interpretation.prompt_injection_detected
+            or interpretation.sensitive_data_detected
+            or interpretation.explicit_language is not None
+            or interpretation.intent
+            in {TurnIntent.OFF_TOPIC, TurnIntent.OPT_OUT, TurnIntent.PROMPT_INJECTION}
+            or bool(interpretation.candidate_questions)
+            or bool(interpretation.ambiguity_notes)
+            or _interpretation_has_correction(interpretation)
+        ):
+            return True
+        if goal is ConversationGoal.FINAL_REVIEW:
+            return interpretation.final_confirmation is not None
+        return interpretation.faq_complete is not None
+
+    if interpretation.intent in _PROTECTED_INTERPRETATION_INTENTS:
+        return True
+    if (
+        interpretation.response_requested
+        or interpretation.prompt_injection_detected
+        or interpretation.sensitive_data_detected
+        or interpretation.opt_out_requested
+        or interpretation.disclosure_acknowledged is not None
+        or interpretation.confirmation is not None
+        or interpretation.final_confirmation is not None
+        or interpretation.faq_complete is not None
+        or interpretation.explicit_language is not None
+        or bool(interpretation.candidate_questions)
+    ):
+        return True
+    return any(
+        _patch_has_signal(getattr(interpretation, field_name))
+        for field_name in _INTERPRETATION_PATCH_FIELDS
+    )
+
+
+def _merge_missing_fallback_signal(
+    model: TurnInterpretation,
+    fallback: TurnInterpretation,
+) -> TurnInterpretation:
+    """Add only absent deterministic fields to a model interpretation.
+
+    The model result remains authoritative for every meaningful field and all
+    intent/safety/question metadata.  The deterministic result is deliberately
+    limited to filling a field that the model left absent (or as a completely
+    default nested object), plus missing closed control flags.
+    """
+
+    updates: dict[str, Any] = {}
+    for field_name in _INTERPRETATION_PATCH_FIELDS:
+        fallback_patch = getattr(fallback, field_name)
+        if fallback_patch is None:
+            continue
+        model_patch = getattr(model, field_name)
+        if not _patch_has_signal(model_patch):
+            updates[field_name] = fallback_patch
+
+    for field_name in (
+        "confirmation",
+        "final_confirmation",
+        "faq_complete",
+        "disclosure_acknowledged",
+        "explicit_language",
+    ):
+        fallback_value = getattr(fallback, field_name)
+        if fallback_value is not None and getattr(model, field_name) is None:
+            updates[field_name] = fallback_value
+
+    # A neutral model object often retains TurnInterpretation's default
+    # language confidence.  Preserve an actual model language signal, but let a
+    # deterministic fallback supply its high-confidence language only when the
+    # model supplied no language action of its own.
+    if (
+        model.language_confidence < 0.8
+        and fallback.language_confidence >= 0.8
+        and fallback.explicit_language is not None
+    ):
+        updates["detected_language"] = fallback.detected_language
+        updates["language_confidence"] = fallback.language_confidence
+
+    return model.model_copy(update=updates) if updates else model
+
+
+def _merge_fallback_usage(
+    model_usage: Mapping[str, Any],
+    fallback_usage: Mapping[str, Any],
+    *,
+    fallback_used: bool,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    """Merge deterministic provenance without replacing provider accounting."""
+
+    usage = dict(model_usage)
+    # The provider's token/request counters are the accounting source of truth
+    # for an LLM-first turn.  The deterministic result reports ``requests=0``;
+    # never let that value erase the provider's actual count.
+    for key, value in fallback_usage.items():
+        if key not in _MODEL_USAGE_COUNTER_KEYS:
+            usage[key] = value
+    usage.update(
+        {
+            "llm_attempted": True,
+            "llm_succeeded": True,
+            "llm_sufficient": False,
+            "deterministic_fallback_attempted": True,
+            "deterministic_fallback_used": fallback_used,
+            "deterministic_fallback": fallback_used or bool(usage.get("deterministic_fallback")),
+            "deterministic_fallback_trigger": "insufficient_llm_output",
+            "deterministic_fallback_reason": fallback_reason,
+        }
+    )
+    return usage
+
+
+def _merge_semantic_retry_results(
+    first: InterpreterResult,
+    second: InterpreterResult,
+) -> InterpreterResult:
+    """Keep the retry interpretation while preserving both calls' accounting."""
+
+    usage = dict(first.usage)
+    for key, value in second.usage.items():
+        if key in _MODEL_USAGE_COUNTER_KEYS and isinstance(value, int | float):
+            previous = usage.get(key, 0)
+            usage[key] = (previous if isinstance(previous, int | float) else 0) + value
+        else:
+            usage[key] = value
+    usage["semantic_goal_retry"] = True
+    return replace(second, usage=usage)
+
+
+def _llm_usage_provenance(
+    interpreted: InterpreterResult,
+    *,
+    sufficient: bool | None,
+    fallback_attempted: bool = False,
+    fallback_used: bool = False,
+    fallback_reason: str | None = None,
+) -> InterpreterResult:
+    """Attach coordinator provenance while retaining adapter usage metrics."""
+
+    usage = dict(interpreted.usage)
+    usage.update(
+        {
+            "llm_attempted": True,
+            "llm_succeeded": True,
+            "llm_sufficient": sufficient,
+            "deterministic_fallback_attempted": fallback_attempted,
+            "deterministic_fallback_used": fallback_used,
+        }
+    )
+    # ``deterministic_fallback`` predates this explicit provenance.  Keep it
+    # true when location grounding/recovery set it, but do not manufacture a
+    # false value over an existing recovery marker.
+    usage.setdefault("deterministic_fallback", False)
+    if fallback_reason is not None:
+        usage["deterministic_fallback_trigger"] = "insufficient_llm_output"
+        usage["deterministic_fallback_reason"] = fallback_reason
+    return replace(interpreted, usage=usage)
+
+
+def _skipped_llm_provenance(
+    interpreted: InterpreterResult,
+    *,
+    reason: str,
+) -> InterpreterResult:
+    """Attach explicit provenance to a provider-free control path."""
+
+    usage = dict(interpreted.usage)
+    usage.update(
+        {
+            "llm_attempted": False,
+            "llm_succeeded": False,
+            "llm_sufficient": None,
+            "llm_skipped_reason": reason,
+            "deterministic_fallback_attempted": False,
+            "deterministic_fallback_used": False,
+        }
+    )
+    usage.setdefault("deterministic_fallback", False)
+    return replace(interpreted, usage=usage)
+
+
+def _provider_failure_usage(category: str | None = None) -> dict[str, Any]:
+    """Return safe provenance for a provider failure without provider details."""
+
+    usage: dict[str, Any] = {
+        "llm_attempted": True,
+        "llm_succeeded": False,
+        "llm_sufficient": False,
+        "deterministic_fallback_attempted": False,
+        "deterministic_fallback_used": False,
+        "deterministic_fallback": False,
+        "deterministic_fallback_reason": "llm_provider_error",
+    }
+    if category is not None:
+        usage["llm_failure_category"] = category
+    return usage
 
 
 def _utc_now() -> datetime:
@@ -673,24 +821,31 @@ class TurnCoordinator:
                 # has already been consumed there is no further provider call.
                 # A deterministic review handoff keeps this path safe and
                 # answerable through idempotent replay.
-                interpreted = InterpreterResult(interpretation=TurnInterpretation())
+                interpreted = _skipped_llm_provenance(
+                    InterpreterResult(interpretation=TurnInterpretation()),
+                    reason="max_turns",
+                )
                 outcome = self._max_turn_outcome(reservation)
             elif language is not None:
                 # A language-selector event is a trusted, explicit preference
                 # change.  It is intentionally handled without a provider so
                 # the demo remains usable without an API key.
-                interpreted = InterpreterResult(
-                    interpretation=TurnInterpretation(
-                        detected_language=language,
-                        language_confidence=1.0,
-                        explicit_language=language,
-                    )
+                interpreted = _skipped_llm_provenance(
+                    InterpreterResult(
+                        interpretation=TurnInterpretation(
+                            detected_language=language,
+                            language_confidence=1.0,
+                            explicit_language=language,
+                        )
+                    ),
+                    reason="explicit_language_event",
                 )
                 outcome = self.controller.process(
                     reservation.state,
                     interpreted.interpretation,
                     now=_utc_now(),
                     message_id=f"turn:{reservation.turn_id}",
+                    trusted_fields=self._trusted_fields(interpreted),
                 )
             else:
                 try:
@@ -704,56 +859,145 @@ class TurnCoordinator:
                             prompt_injection_detected=guardrail.prompt_injection,
                             sensitive_data_detected=guardrail.sensitive_data,
                         )
-                        interpreted = InterpreterResult(interpretation=interpretation)
-                    else:
-                        # Closed-vocabulary control replies and explicit
-                        # name-prefixed answers do not need an LLM call.
-                        # Bare name answers still use the typed interpreter,
-                        # then receive a conservative fallback if a provider
-                        # returns a valid but empty patch.
+                        interpreted = _skipped_llm_provenance(
+                            InterpreterResult(interpretation=interpretation),
+                            reason="guardrail",
+                        )
+                    elif is_exact_opt_out(guardrail.message):
+                        # Opt-out is an application-owned safety control.  It
+                        # must remain provider-free and exact so a provider
+                        # cannot reinterpret or soften the candidate's exit.
                         interpreted = self._deterministic_interpretation(
                             reservation, guardrail.message
                         )
                         if interpreted is None:
-                            dependencies = InterpreterDependencies(
-                                state=reservation.state,
-                                pending_field=reservation.state.current_field,
-                                language=reservation.language,
-                                now=_utc_now(),
-                                local_date=_utc_now().date().isoformat(),
-                                correlation_id=correlation_id,
+                            # ``is_exact_opt_out`` and the deterministic
+                            # interpreter intentionally share the same closed
+                            # vocabulary.  Keep a defensive safe result if a
+                            # future vocabulary change ever makes them drift.
+                            interpreted = InterpreterResult(
+                                interpretation=TurnInterpretation(
+                                    intent=TurnIntent.OPT_OUT,
+                                    opt_out_requested=True,
+                                ),
+                                usage={
+                                    "deterministic": True,
+                                    "deterministic_reason": "opt_out",
+                                },
                             )
-                            bounded_history = build_bounded_history(
-                                reservation.history,
-                                max_pairs=self.history_max_pairs,
-                                max_characters=self.history_max_characters,
-                            )
-                            interpreted = await self.interpreter.interpret(
+                        interpreted = _skipped_llm_provenance(
+                            interpreted,
+                            reason="exact_opt_out",
+                        )
+                    else:
+                        current_decision = self.controller.screening_engine.evaluate(
+                            reservation.state
+                        )
+                        conversation_goal = _conversation_goal(reservation.state, current_decision)
+                        dependencies = InterpreterDependencies(
+                            state=reservation.state,
+                            pending_field=reservation.state.current_field,
+                            language=reservation.language,
+                            now=_utc_now(),
+                            local_date=_utc_now().date().isoformat(),
+                            correlation_id=correlation_id,
+                            conversation_goal=conversation_goal,
+                        )
+                        bounded_history = build_bounded_history(
+                            reservation.history,
+                            max_pairs=self.history_max_pairs,
+                            max_characters=self.history_max_characters,
+                        )
+                        # Every non-control, safe candidate turn is model-first.
+                        # Provider errors are handled below as failed turns;
+                        # they never enter the deterministic recovery path.
+                        interpreted = await self.interpreter.interpret(
+                            guardrail.message,
+                            dependencies,
+                            message_history=bounded_history,
+                        )
+                        interpreted = replace(
+                            interpreted,
+                            interpretation=_normalize_goal_control(
+                                interpreted.interpretation,
+                                conversation_goal,
+                            ),
+                        )
+                        if conversation_goal in {
+                            ConversationGoal.FINAL_REVIEW,
+                            ConversationGoal.POST_SCREENING_FAQ,
+                        } and not _interpretation_is_sufficient(
+                            interpreted.interpretation,
+                            conversation_goal,
+                        ):
+                            retry_dependencies = replace(dependencies, goal_retry=True)
+                            retried = await self.interpreter.interpret(
                                 guardrail.message,
-                                dependencies,
+                                retry_dependencies,
                                 message_history=bounded_history,
                             )
-                            interpreted = self._recover_unambiguous_confirmation(
-                                interpreted, reservation, guardrail.message
+                            retried = replace(
+                                retried,
+                                interpretation=_normalize_goal_control(
+                                    retried.interpretation,
+                                    conversation_goal,
+                                ),
                             )
-                            interpreted = self._recover_unambiguous_license_answer(
-                                interpreted, reservation, guardrail.message
-                            )
-                            interpreted = self._recover_unambiguous_name_answer(
-                                interpreted, reservation, guardrail.message
-                            )
-                    if not guardrail.prompt_injection and not guardrail.sensitive_data:
+                            interpreted = _merge_semantic_retry_results(interpreted, retried)
+                        interpreted = _llm_usage_provenance(
+                            interpreted,
+                            sufficient=None,
+                        )
                         interpreted = recover_location_answer(
                             reservation.state,
                             guardrail.message,
                             interpreted,
                             service_area_matcher=self.controller.service_area_matcher,
                         )
+                        if _interpretation_is_sufficient(
+                            interpreted.interpretation,
+                            conversation_goal,
+                        ):
+                            interpreted = _llm_usage_provenance(
+                                interpreted,
+                                sufficient=True,
+                            )
+                        else:
+                            deterministic = self._deterministic_interpretation(
+                                reservation, guardrail.message
+                            )
+                            if deterministic is not None:
+                                fallback_reason = deterministic.usage.get(
+                                    "deterministic_reason", "deterministic_recovery"
+                                )
+                                if not isinstance(fallback_reason, str):
+                                    fallback_reason = "deterministic_recovery"
+                                interpreted = replace(
+                                    interpreted,
+                                    interpretation=_merge_missing_fallback_signal(
+                                        interpreted.interpretation,
+                                        deterministic.interpretation,
+                                    ),
+                                    usage=_merge_fallback_usage(
+                                        interpreted.usage,
+                                        deterministic.usage,
+                                        fallback_used=True,
+                                        fallback_reason=fallback_reason,
+                                    ),
+                                )
+                            else:
+                                interpreted = _llm_usage_provenance(
+                                    interpreted,
+                                    sufficient=False,
+                                    fallback_attempted=True,
+                                    fallback_reason="no_safe_deterministic_interpretation",
+                                )
                     outcome = self.controller.process(
                         reservation.state,
                         interpreted.interpretation,
                         now=_utc_now(),
                         message_id=f"turn:{reservation.turn_id}",
+                        trusted_fields=self._trusted_fields(interpreted),
                     )
                 except AIProviderError as exc:
                     logger.warning(
@@ -765,13 +1009,20 @@ class TurnCoordinator:
                     )
                     return await self._fail_turn(
                         reservation,
-                        error_code=(
-                            "provider_rate_limited"
-                            if exc.category == "rate_limited"
-                            else "provider_unavailable"
+                        error_code={
+                            "rate_limited": "provider_rate_limited",
+                            "timeout": "provider_timeout",
+                            "unavailable": "provider_unavailable",
+                            "invalid_output": "provider_invalid_output",
+                            "unexpected": "provider_unexpected",
+                        }.get(exc.category, "provider_unexpected"),
+                        message=self._temporary_message(
+                            reservation.language,
+                            reservation.state.current_field,
+                            describe_field=True,
                         ),
-                        message=self._temporary_message(reservation.language),
                         latency_ms=int((time.monotonic() - started) * 1_000),
+                        model_usage=_provider_failure_usage(exc.category),
                     )
                 except Exception:
                     logger.exception(
@@ -780,8 +1031,13 @@ class TurnCoordinator:
                     return await self._fail_turn(
                         reservation,
                         error_code="provider_unavailable",
-                        message=self._temporary_message(reservation.language),
+                        message=self._temporary_message(
+                            reservation.language,
+                            reservation.state.current_field,
+                            describe_field=True,
+                        ),
                         latency_ms=int((time.monotonic() - started) * 1_000),
+                        model_usage=_provider_failure_usage(),
                     )
 
             # The final allowed turn may be interpreted normally, but an
@@ -862,127 +1118,41 @@ class TurnCoordinator:
         )
 
     @staticmethod
-    def _recover_unambiguous_confirmation(
-        interpreted: InterpreterResult,
-        reservation: _Reservation,
-        message: str,
-    ) -> InterpreterResult:
-        """Recover an exact yes/no response to a pending proposal.
+    def _trusted_fields(interpreted: InterpreterResult) -> set[ScreeningField]:
+        """Return fields grounded by an application-owned closed vocabulary.
 
-        Confirmation is a small closed vocabulary owned by the application.
-        Recovering an exact one-token answer protects city-area offers and
-        correction prompts from a provider that returns a valid schema but
-        omits the ``confirmation`` flag.  Longer prose remains model-owned so
-        the application never guesses intent from arbitrary text.
+        Provider output is intentionally passed with an empty set: the
+        controller can then require an explicit candidate confirmation before
+        a model-only decision-impacting negative value is canonicalized.
         """
 
-        interpretation = interpreted.interpretation
-        if (
-            reservation.state.pending_confirmation is None
-            or interpretation.confirmation is not None
-        ):
-            return interpreted
-        normalized = _normalize_short_message(message)
-        value = _CONFIRMATION_VALUES.get(normalized)
-        if value is None:
-            return interpreted
-        return replace(
-            interpreted,
-            interpretation=interpretation.model_copy(update={"confirmation": value}),
-        )
-
-    @staticmethod
-    def _recover_unambiguous_license_answer(
-        interpreted: InterpreterResult,
-        reservation: _Reservation,
-        message: str,
-    ) -> InterpreterResult:
-        """Patch an exact yes/no licence answer if a provider omitted it.
-
-        A short answer to the active boolean prompt is unambiguous and can be
-        recovered without guessing from prose.  This is a resilience fallback
-        for provider extraction gaps; all other fields remain provider-owned.
-        """
-
-        interpretation = interpreted.interpretation
-        if (
-            reservation.state.current_field is not ScreeningField.DRIVERS_LICENSE
-            or interpretation.drivers_license is not None
-        ):
-            return interpreted
-        normalized = _normalize_short_message(message)
-        value = _LICENSE_VALUES.get(normalized)
-        if value is None:
-            return interpreted
-        patched = interpretation.model_copy(
-            update={
-                "drivers_license": ExtractedValue(
-                    value=value, provided=True, evidence=message[:500]
-                )
-            }
-        )
-        return replace(interpreted, interpretation=patched)
-
-    @staticmethod
-    def _recover_unambiguous_name_answer(
-        interpreted: InterpreterResult,
-        reservation: _Reservation,
-        message: str,
-    ) -> InterpreterResult:
-        """Recover a clear bare name when the model returns an empty patch.
-
-        ``TurnInterpretation`` intentionally permits an empty patch for
-        question-only/off-topic turns.  Some providers can therefore return
-        a valid default object for a plainly answered name prompt.  Apply the
-        conservative name parser only when the model supplied no other fact;
-        all multi-field, correction, and ambiguous messages remain model-owned.
-        """
-
-        interpretation = interpreted.interpretation
-        if reservation.state.current_field is not ScreeningField.FULL_NAME:
-            return interpreted
-        if interpretation.intent not in {TurnIntent.ANSWER, TurnIntent.UNKNOWN}:
-            return interpreted
-        if interpretation.full_name is not None and (
-            interpretation.full_name.provided
-            or interpretation.full_name.ambiguous
-            or interpretation.full_name.correction
-        ):
-            return interpreted
-        if (
-            any(
-                value is not None
-                for value in (
-                    interpretation.drivers_license,
-                    interpretation.location,
-                    interpretation.availability,
-                    interpretation.preferred_schedule,
-                    interpretation.delivery_experience,
-                    interpretation.start_availability,
-                )
-            )
-            or interpretation.candidate_questions
-        ):
-            return interpreted
-        name = _extract_simple_full_name(message)
-        if name is None:
-            return interpreted
-        patched = interpretation.model_copy(
-            update={
-                # This repairs the legacy state where the name prompt was
-                # already shown but the disclosure flag was not persisted.
-                "disclosure_acknowledged": True,
-                "full_name": ExtractedValue(
-                    value=name,
-                    provided=True,
-                    evidence=message[:500],
-                ),
-            }
-        )
-        usage = dict(interpreted.usage)
-        usage["deterministic_fallback"] = True
-        usage["deterministic_fallback_field"] = ScreeningField.FULL_NAME.value
-        return replace(interpreted, interpretation=patched, usage=usage)
+        usage = interpreted.usage
+        trusted: set[ScreeningField] = set()
+        reason = usage.get("deterministic_reason")
+        if usage.get("deterministic"):
+            if reason == "license_control":
+                trusted.add(ScreeningField.DRIVERS_LICENSE)
+            elif isinstance(reason, str) and reason in {
+                "message_exact",
+                "message_catalog_alias",
+                "message_known_city",
+                "pending_city_zone",
+                "fallback_pending_city_zone",
+                "fallback_exact_alias",
+                "fallback_known_city",
+            }:
+                trusted.add(ScreeningField.LOCATION)
+            elif reason in {"name_prefix", "name_answer"}:
+                trusted.add(ScreeningField.FULL_NAME)
+        fallback_field = usage.get("deterministic_fallback_field")
+        try:
+            if fallback_field:
+                trusted.add(ScreeningField(str(fallback_field)))
+        except ValueError:
+            # Metadata is operational only; an unknown future value must not
+            # become a trust bypass.
+            pass
+        return trusted
 
     async def _reserve_turn(
         self,
@@ -1465,23 +1635,44 @@ class TurnCoordinator:
 
     def _max_turn_outcome(self, reservation: _Reservation) -> ConversationTurnResult:
         decision = self._max_turn_decision(reservation.state)
+        plan = ResponsePlan(
+            kind=ResponseKind.MAX_TURNS,
+            language=reservation.language,
+            state=reservation.state,
+            decision=decision,
+            variant_key=f"max_turns:{reservation.language.value}",
+        )
         return ConversationTurnResult(
             state=reservation.state,
             decision=decision,
-            assistant_message=self._max_turn_message(reservation.language),
+            assistant_message=render_response_plan(plan),
             changed_fields=[],
+            response_plan=plan,
         )
 
     def _force_max_turn_handoff(self, outcome: ConversationTurnResult) -> ConversationTurnResult:
         """Close an unresolved conversation on its final allowed turn."""
 
-        if outcome.decision.status is not ScreeningStatus.IN_PROGRESS:
+        if outcome.decision.status in {
+            ScreeningStatus.QUALIFIED,
+            ScreeningStatus.DISQUALIFIED,
+            ScreeningStatus.ABANDONED,
+        }:
             return outcome
+        decision = self._max_turn_decision(outcome.state, base=outcome.decision)
+        plan = ResponsePlan(
+            kind=ResponseKind.MAX_TURNS,
+            language=outcome.state.preferred_language,
+            state=outcome.state,
+            decision=decision,
+            variant_key=f"max_turns:{outcome.state.preferred_language.value}",
+        )
         return replace(
             outcome,
-            decision=self._max_turn_decision(outcome.state, base=outcome.decision),
-            assistant_message=self._max_turn_message(outcome.state.preferred_language),
+            decision=decision,
+            assistant_message=render_response_plan(plan),
             next_field=None,
+            response_plan=plan,
         )
 
     async def _generate_summary(self, outcome: ConversationTurnResult) -> tuple[str, str]:
@@ -1623,6 +1814,7 @@ class TurnCoordinator:
         error_code: str,
         message: str,
         latency_ms: int,
+        model_usage: Mapping[str, Any] | None = None,
     ) -> TurnCoordinatorResult:
         async with self._uow() as uow:
             assert uow.turns and uow.messages and uow.audit_events
@@ -1639,6 +1831,7 @@ class TurnCoordinator:
                 error_code=error_code,
                 response_message=message,
                 latency_ms=latency_ms,
+                model_usage=model_usage,
             )
             await uow.messages.add(
                 MessageORM(
@@ -1682,6 +1875,7 @@ class TurnCoordinator:
         error_code: str,
         response_message: str,
         latency_ms: int,
+        model_usage: Mapping[str, Any] | None = None,
     ) -> None:
         turn.status = TurnStatus.FAILED.value
         turn.error_code = error_code[:100]
@@ -1693,14 +1887,52 @@ class TurnCoordinator:
             "summary_status": None,
         }
         turn.latency_ms = max(0, latency_ms)
+        if model_usage is not None:
+            turn.model_usage = dict(model_usage)
         turn.completed_at = _utc_now()
 
     @staticmethod
-    def _temporary_message(language: Language) -> str:
+    def _temporary_message(
+        language: Language,
+        field: ScreeningField | None = None,
+        *,
+        describe_field: bool = False,
+    ) -> str:
+        labels = {
+            Language.EN: {
+                ScreeningField.FULL_NAME: "your full name",
+                ScreeningField.DRIVERS_LICENSE: "your driver's licence answer",
+                ScreeningField.LOCATION: "your preferred delivery area",
+                ScreeningField.AVAILABILITY: "your availability",
+                ScreeningField.PREFERRED_SCHEDULE: "your preferred schedule",
+                ScreeningField.DELIVERY_EXPERIENCE: "your delivery experience",
+                ScreeningField.START_AVAILABILITY: "when you can start",
+                None: "your final confirmation",
+            },
+            Language.ES: {
+                ScreeningField.FULL_NAME: "tu nombre completo",
+                ScreeningField.DRIVERS_LICENSE: "tu respuesta sobre la licencia de conducir",
+                ScreeningField.LOCATION: "tu zona de reparto preferida",
+                ScreeningField.AVAILABILITY: "tu disponibilidad",
+                ScreeningField.PREFERRED_SCHEDULE: "tu horario preferido",
+                ScreeningField.DELIVERY_EXPERIENCE: "tu experiencia en reparto",
+                ScreeningField.START_AVAILABILITY: "cuándo puedes empezar",
+                None: "tu confirmación final",
+            },
+        }
+        if not describe_field:
+            return (
+                "I’m having trouble processing that request right now. Please try again in a moment."
+                if language is Language.EN
+                else "Ahora mismo tengo problemas para procesar esa solicitud. Inténtalo de nuevo en un momento."
+            )
+        detail = labels[language][field]
         return (
-            "I’m sorry, I’m temporarily unable to process that message. Your previous information is unchanged; please try again."
+            f"I’m having a temporary problem validating {detail}. "
+            "Everything already confirmed is still saved; please try that answer again in a moment."
             if language is Language.EN
-            else "Lo siento, no puedo procesar ese mensaje temporalmente. Tu información anterior no ha cambiado; inténtalo de nuevo."
+            else f"Ahora mismo tengo un problema temporal para validar {detail}. "
+            "Todo lo confirmado anteriormente sigue guardado; inténtalo de nuevo en un momento."
         )
 
     @staticmethod

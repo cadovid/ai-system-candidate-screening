@@ -156,6 +156,8 @@ class ScreeningState(DomainModel):
     )
     disclosure_acknowledged: bool = False
     candidate_confirmed: bool = False
+    faq_offer_made: bool = False
+    faq_completed: bool = False
     ruleset_version: str = "2026-01"
 
     @field_validator("full_name")
