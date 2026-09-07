@@ -103,9 +103,9 @@ flowchart LR
   G -->|normal safe text| LLM[Pydantic AI interpreter]
   subgraph PROVIDER[Separate server-side LLM provider boundary]
     CONFIG[LLM_MODEL + selected provider key] --> RESOLVE[Provider/model resolver]
-    RESOLVE --> GQ[Groq / GPT-OSS 20B (free dev)]
-    RESOLVE --> OR[OpenRouter / pinned GLM-5.2 Free (secondary)]
-    RESOLVE --> OA[OpenAI Responses (explicit opt-in)]
+    RESOLVE --> GQ["Groq / GPT-OSS 20B (free dev)"]
+    RESOLVE --> OR["OpenRouter / pinned GLM-5.2 Free (secondary)"]
+    RESOLVE --> OA["OpenAI Responses (explicit opt-in)"]
     OA -->|typed provider response| LLM
     OR -->|typed provider response| LLM
     GQ -->|typed provider response| LLM

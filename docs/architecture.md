@@ -52,9 +52,9 @@ flowchart TB
     Interpreter[PydanticAIInterpreter]
     Summary[SummaryGenerator]
     Schemas[TurnInterpretation / RecruiterSummaryOutput]
-    Groq[Groq / openai/gpt-oss-20b (recommended free dev)]
-    OpenRouter[OpenRouter / pinned GLM-5.2 Free (secondary free)]
-    OpenAI[OpenAI / selected model (explicit opt-in)]
+    Groq["Groq / openai/gpt-oss-20b (recommended free dev)"]
+    OpenRouter["OpenRouter / pinned GLM-5.2 Free (secondary free)"]
+    OpenAI["OpenAI / selected model (explicit opt-in)"]
   end
 
   Groq -. server-side API .-> GroqAPI[(Groq OpenAI-compatible API)]
@@ -161,12 +161,12 @@ The FAQ is not an open-ended model knowledge source. `FAQCatalog` loads a small 
 ```mermaid
 sequenceDiagram
   participant T as Candidate Text UI
-  participant V as Browser Voice (STT/TTS)
+  participant V as Browser voice STT/TTS
   participant A as API/middleware
   participant C as TurnCoordinator
   participant G as Guardrails
   participant M as Interpreter
-  participant P as Selected provider (Groq/OpenRouter/OpenAI)
+  participant P as Selected provider
   participant D as Domain controller
   participant S as ScreeningEngine
   participant DB as Database
@@ -198,7 +198,7 @@ sequenceDiagram
       C->>C: narrow deterministic completion and provenance
       C->>D: reconcile merged typed patch
     else provider/schema failure
-      C->>DB: failed turn; preserve prior state
+      C->>DB: failed turn, preserve prior state
     end
   end
   D->>S: canonical ScreeningState
