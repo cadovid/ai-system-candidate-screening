@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from candidate_screening.application.faq import FAQCatalog
 from candidate_screening.domain.enums import Language
 
@@ -21,3 +23,25 @@ def test_faq_matching_is_accent_insensitive_and_localized() -> None:
 def test_faq_unknown_question_returns_none() -> None:
     catalog = FAQCatalog.from_file(Path("data/faq/faq.json"))
     assert catalog.answer("What is the meaning of life?", Language.EN) is None
+
+
+@pytest.mark.parametrize(
+    ("question", "language", "expected_entry"),
+    [
+        ("¿En qué consiste el puesto?", Language.ES, "job-description"),
+        ("¿Cómo es el proceso?", Language.ES, "application-process"),
+        ("What does the role involve?", Language.EN, "job-description"),
+        ("How is the process?", Language.EN, "application-process"),
+    ],
+)
+def test_faq_matches_natural_role_and_process_questions(
+    question: str,
+    language: Language,
+    expected_entry: str,
+) -> None:
+    catalog = FAQCatalog.from_file(Path("data/faq/faq.json"))
+
+    match = catalog.retrieve(question, language)
+
+    assert match is not None
+    assert match.entry.id == expected_entry

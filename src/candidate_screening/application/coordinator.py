@@ -50,6 +50,7 @@ from candidate_screening.application.conversation_copy import render_response_pl
 from candidate_screening.application.deterministic_interpretation import (
     interpret_deterministically,
     is_exact_opt_out,
+    recover_candidate_question,
     recover_location_answer,
 )
 from candidate_screening.application.guardrails import inspect_message, summary_is_safe
@@ -365,7 +366,11 @@ def _interpretation_is_sufficient(
     model-detected safety signals.
     """
 
-    if goal in {ConversationGoal.FINAL_REVIEW, ConversationGoal.POST_SCREENING_FAQ}:
+    if goal in {
+        ConversationGoal.PENDING_CONFIRMATION,
+        ConversationGoal.FINAL_REVIEW,
+        ConversationGoal.POST_SCREENING_FAQ,
+    }:
         if (
             interpretation.opt_out_requested
             or interpretation.prompt_injection_detected
@@ -378,6 +383,15 @@ def _interpretation_is_sufficient(
             or _interpretation_has_correction(interpretation)
         ):
             return True
+        if goal is ConversationGoal.PENDING_CONFIRMATION:
+            # A pending proposal is a control goal. Provider echoes of facts
+            # from canonical history must not suppress the narrow exact
+            # yes/no recovery. A grounded concrete location remains useful
+            # because candidates may name one offered zone instead of saying
+            # yes or no.
+            return interpretation.confirmation is not None or _patch_has_signal(
+                interpretation.location
+            )
         if goal is ConversationGoal.FINAL_REVIEW:
             return interpretation.final_confirmation is not None
         return interpretation.faq_complete is not None
@@ -953,6 +967,10 @@ class TurnCoordinator:
                             guardrail.message,
                             interpreted,
                             service_area_matcher=self.controller.service_area_matcher,
+                        )
+                        interpreted = recover_candidate_question(
+                            guardrail.message,
+                            interpreted,
                         )
                         if _interpretation_is_sufficient(
                             interpreted.interpretation,

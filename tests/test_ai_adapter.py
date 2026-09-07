@@ -44,9 +44,11 @@ from candidate_screening.application.reconciliation import reconcile_interpretat
 from candidate_screening.config import Settings
 from candidate_screening.domain.enums import Language, ScreeningField, ScreeningStatus
 from candidate_screening.domain.models import (
+    Evidence,
     PendingConfirmation,
     ScreeningDecision,
     ScreeningState,
+    SourcedValue,
     StartDatePrecision,
 )
 
@@ -99,6 +101,28 @@ def test_extraction_prompt_includes_bounded_pending_confirmation_context() -> No
     assert "candidate_correction" in prompt
     assert "Ada Lovelace" in prompt
     assert '"pending_confirmation"' not in prompt
+
+
+def test_extraction_prompt_excludes_canonical_audit_provenance() -> None:
+    state = ScreeningState.empty(Language.ES)
+    state.full_name = SourcedValue(
+        value="Carlos Alcantara",
+        evidence=Evidence(message_id="turn:must-not-reach-model", quote="Carlos Alcantara"),
+        captured_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    dependencies = InterpreterDependencies(
+        state=state,
+        pending_field=ScreeningField.DRIVERS_LICENSE,
+        language=Language.ES,
+        now=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    prompt = _extraction_instructions_for(dependencies)
+
+    assert "Carlos Alcantara" in prompt
+    assert "turn:must-not-reach-model" not in prompt
+    assert '"message_id"' not in prompt
+    assert '"captured_at"' not in prompt
 
 
 @pytest.mark.asyncio
@@ -164,6 +188,8 @@ async def test_function_model_receives_rendered_dependencies_without_network() -
     assert "corrections" in observed[0][1]
     assert "code-switching" in observed[0][1]
     assert "write an assistant response" in observed[0][1]
+    assert "including questions asked" in observed[0][1]
+    assert "Never treat a question as acknowledgement" in observed[0][1]
     # Empty/default state fields are omitted to keep each extraction prompt
     # small; populated canonical values are still rendered when present.
     assert "Canonical state (context only) is:" in observed[0][1]
@@ -182,6 +208,18 @@ def test_final_review_prompt_names_goal_and_forbids_canonical_echoes() -> None:
     assert "Todo es correcto" in prompt
     assert "final_confirmation=true" in prompt
     assert "Do not echo canonical field patches" in prompt
+
+
+def test_pending_confirmation_prompt_defines_control_and_concrete_zone_behavior() -> None:
+    dependencies = _dependencies(Language.ES)
+    dependencies.conversation_goal = ConversationGoal.PENDING_CONFIRMATION
+
+    prompt = _extraction_instructions_for(dependencies)
+
+    assert "conversational goal for this turn is ``pending_confirmation``" in prompt
+    assert "``confirmation=true`` or ``confirmation=false``" in prompt
+    assert "names one concrete area" in prompt
+    assert "Do not copy the pending or canonical location" in prompt
 
 
 @pytest.mark.asyncio

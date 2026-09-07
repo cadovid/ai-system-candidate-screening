@@ -772,16 +772,12 @@ def recover_location_answer(
         interpreted = replace(interpreted, interpretation=interpretation, usage=usage)
         existing_patch = None
 
-    if (
-        interpretation.intent
-        in {
-            TurnIntent.QUESTION,
-            TurnIntent.OFF_TOPIC,
-            TurnIntent.OPT_OUT,
-            TurnIntent.PROMPT_INJECTION,
-        }
-        or interpretation.response_requested
-    ):
+    if interpretation.intent in {
+        TurnIntent.QUESTION,
+        TurnIntent.OFF_TOPIC,
+        TurnIntent.OPT_OUT,
+        TurnIntent.PROMPT_INJECTION,
+    }:
         return interpreted
     pending = state.pending_confirmation
     location_active = (
@@ -961,6 +957,70 @@ def recover_location_answer(
         }
     )
     return replace(interpreted, interpretation=patched_interpretation, usage=usage)
+
+
+def recover_candidate_question(
+    message: str,
+    interpreted: InterpreterResult,
+) -> InterpreterResult:
+    """Preserve an explicit candidate question omitted from typed output.
+
+    This repair classifies only the conversational shape: it copies the
+    bounded current message into ``candidate_questions`` when normal question
+    punctuation/grammar is present. It does not infer a topic or answer; the
+    independent FAQ catalogue remains authoritative for supported content.
+    Existing model questions and all security/opt-out signals are preserved.
+    """
+
+    interpretation = interpreted.interpretation
+    if (
+        interpretation.prompt_injection_detected
+        or interpretation.sensitive_data_detected
+        or interpretation.opt_out_requested
+        or interpretation.intent in {TurnIntent.OPT_OUT, TurnIntent.PROMPT_INJECTION}
+    ):
+        return interpreted
+    question = " ".join(message.split()).strip()
+    if not question or not _looks_like_question(question):
+        return interpreted
+
+    # For an explicit question, the current candidate-authored text is safer
+    # retrieval input than a provider paraphrase. In particular, models can
+    # echo the previous turn's question from bounded history. Preserve an
+    # already exact result without touching its provenance; otherwise replace
+    # only the question list, never any extracted screening patches.
+    if interpretation.candidate_questions == [question]:
+        return interpreted
+
+    has_patch = any(
+        patch is not None
+        for patch in (
+            interpretation.full_name,
+            interpretation.drivers_license,
+            interpretation.location,
+            interpretation.availability,
+            interpretation.preferred_schedule,
+            interpretation.delivery_experience,
+            interpretation.start_availability,
+        )
+    )
+    intent = interpretation.intent
+    if intent not in {TurnIntent.QUESTION, TurnIntent.MIXED}:
+        intent = TurnIntent.MIXED if has_patch else TurnIntent.QUESTION
+    repaired = interpretation.model_copy(
+        update={
+            "intent": intent,
+            "response_requested": True,
+            "candidate_questions": [question[:500]],
+        }
+    )
+    usage = dict(interpreted.usage)
+    usage[
+        "candidate_question_grounded"
+        if interpretation.candidate_questions
+        else "candidate_question_recovered"
+    ] = True
+    return replace(interpreted, interpretation=repaired, usage=usage)
 
 
 def _extract_location_raw(patch: ExtractedLocation) -> str:
@@ -1193,4 +1253,9 @@ def is_exact_opt_out(message: str) -> bool:
     return _normalize(message) in _EXACT_OPT_OUT
 
 
-__all__ = ["interpret_deterministically", "is_exact_opt_out"]
+__all__ = [
+    "interpret_deterministically",
+    "is_exact_opt_out",
+    "recover_candidate_question",
+    "recover_location_answer",
+]

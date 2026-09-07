@@ -76,7 +76,7 @@ While the queue request is loading, the status filter is disabled; it becomes av
 
 The analytics page at `/analytics` is a presentation layer over the existing protected `GET /api/v1/internal/analytics` endpoint. It shows aggregate KPI cards, status distribution, completion and handoff metrics, language and input-mode mix, reliability signals, drop-off stages, deterministic disqualification reasons, audit events, and clarification retries. It never displays candidate transcripts or ranking scores. Entering the internal key loads the data for that page only; the key is not persisted by the browser.
 
-## Architecture
+## Architecture overview
 
 ```mermaid
 flowchart LR
@@ -184,7 +184,7 @@ The separate conversation status is `active`, `completed`, or `opted_out`. Once 
 | `scripts/reengage.py` | Dry-run-by-default bounded reminder job for inactive conversations. |
 | `docs/` | Architecture, process, responsible-AI notes, sample conversations, and production roadmap. |
 
-## Local setup
+## Setup instructions
 
 Prerequisites: Python 3.14, [PDM](https://pdm-project.org/), and a shell. Node.js 18+ is only needed for the dependency-free frontend test command. The lockfile is the source of truth for Python dependencies.
 
@@ -195,6 +195,12 @@ mkdir -p var
 pdm run migrate
 pdm run dev
 ```
+
+`pdm run migrate` applies the committed Alembic migrations to the configured database.
+Run it after creating a fresh local database and whenever an update adds a migration; it
+is safe to run again when the database is already current. The Docker entrypoint performs
+this step automatically, while the local PDM workflow keeps it explicit so schema changes
+are visible during development.
 
 Open <http://127.0.0.1:8001/> for the candidate view, <http://127.0.0.1:8001/recruiter> for the internal queue, <http://127.0.0.1:8001/analytics> for the aggregate dashboard, or <http://127.0.0.1:8001/docs> for FastAPI’s generated OpenAPI UI. Set the key for the provider selected by `LLM_MODEL` in `.env` for live turns. Never commit `.env`, provider keys, resume tokens, or candidate data.
 
@@ -288,26 +294,15 @@ Only the key for the selected provider is required. To set up Groq locally, copy
 
 For Groq GPT-OSS models, the adapter sends the current `include_reasoning=false` API option and `GROQ_REASONING_EFFORT` (default `low`) through the native model boundary. GPT-OSS does not accept the older `reasoning_format` option; keeping this setting at `low` is appropriate for short extraction turns. Use `medium` or `high` only when testing shows a quality benefit, because those modes consume more reasoning tokens. Groq documents `reasoning_effort` for GPT-OSS as low/medium/high and describes low as using a small number of reasoning tokens ([official reasoning documentation](https://console.groq.com/docs/reasoning)). Extraction uses the explicit low `LLM_EXTRACTION_TEMPERATURE` setting (default `0.0`), while summaries use the provider default. Native strict JSON output is selected only for Groq GPT-OSS `20b` and `120b`: the adapter transforms the Pydantic schema at the provider wire boundary into Groq's strict structural subset (including inlining local references, closing objects, and requiring object properties) without changing the application schema. Canonical Pydantic validation remains authoritative and post-validates every native response; other Groq models and providers retain the structured-tool path. This provider-wire adaptation does not change the LLM-first completion policy, reconciliation, or qualification rules. Groq performs up to `GROQ_TRANSPORT_RETRIES=2` transient retries after the initial request. Its SDK honors reasonable `Retry-After` values and otherwise applies jittered exponential backoff for 408/409/429/5xx responses. The bounded output-validation retry budget remains separate (`GROQ_OUTPUT_RETRIES=1`, capped by `LLM_MAX_RETRIES`). When Groq returns HTTP `400` with the exact JSON error code `json_validate_failed`, the adapter supplies Pydantic AI with a safe synthetic validation failure, so its next bounded attempt includes schema-specific correction feedback instead of repeating the same request. Provider error text and failed generations are never forwarded. Generic non-transient `400` errors are not transport-retried. Set either retry value to `0` when a no-retry diagnostic run is required.
 
-### Why a short reply can consume many tokens
-
-The provider bills/token-counts the complete model request, not just the candidate's last message. For an extraction turn, inspect these locations:
-
-- [`_extraction_instructions_for`](src/candidate_screening/ai/pydantic_ai.py) builds the dynamic instructions containing the current language, pending field, date, safety rules, and a compact canonical-state JSON snapshot.
-- [`TurnInterpretation`](src/candidate_screening/ai/schemas.py) is supplied to Pydantic AI as a structured output type. Groq GPT-OSS 20B/120B use native strict JSON output with a Groq-specific wire-schema transform; the canonical Pydantic model is unchanged and post-validates the response. Other providers and Groq models send the nested schema as a structured tool. The schema is much larger than `Laura Pineda` itself.
-- [`build_bounded_history`](src/candidate_screening/ai/history.py) adds prior server-owned conversation messages (up to `HISTORY_MAX_PAIRS` and `HISTORY_MAX_CHARACTERS`) so the model can understand corrections and context.
-- [`process_turn`](src/candidate_screening/application/coordinator.py) normally permits up to `LLM_MAX_RETRIES + 1` structured-output attempts. For Groq, each transport request may additionally retry a transient failure up to `GROQ_TRANSPORT_RETRIES` times; output validation remains bounded separately by `min(LLM_MAX_RETRIES, GROQ_OUTPUT_RETRIES) + 1`. The browser keeps the same temporary typing indicator visible while the backend waits and retries.
-
-GPT-OSS also performs hidden reasoning. `reasoning_format`/`include_reasoning` controls whether that reasoning is returned, not whether it is generated; `GROQ_REASONING_EFFORT=low` limits it for this application. Every normal safe candidate turn now tries the selected typed LLM interpreter first, including exact names, controls, and catalogue phrases. If that response is schema-valid but neutral or empty, [`interpret_deterministically`](src/candidate_screening/application/deterministic_interpretation.py) may supply only a narrow, auditable completion such as an exact control, catalogue match, or conservative name; it is merged without replacing usable model facts. Ambiguous values, corrections, questions, and safety flags remain model-owned and go through deterministic reconciliation/clarification. Guardrail blocks, exact opt-outs, explicit UI language events, and the `MAX_TURNS` handoff are provider-free exceptions. Provider, timeout, rate-limit, and schema failures remain retryable failures and do not trigger semantic deterministic recovery or a paid/alternate-provider route. After a model response, the location helper may recover only catalogue-grounded evidence from the candidate’s message; it cannot invent an area. The controller then builds a deterministic response plan and bounded localized copy. Summary generation is a separate model call and only runs after a terminal screening result.
-
-For a quota-sensitive local demo, keep `GROQ_REASONING_EFFORT=low`; optionally set `LLM_MAX_RETRIES=0` to avoid repeat attempts while debugging (at the cost of less recovery from malformed/transient responses). LLM-first ordering adds one provider request, its latency, and its input/history/output-token cost to turns that previously matched a deterministic shortcut; a deterministic completion itself adds no provider request after that first attempt. Keep the history and output bounds explicit rather than removing context blindly. Persisted turn usage records the provider/model attempt and provider-reported token/request counts when available, alongside interpretation provenance (LLM result, deterministic completion, or provider-free control), so the operational dashboard can distinguish model usage from local work; a provider may still report zero or incomplete detail, with its dashboard remaining authoritative.
+#### OpenRouter GLM-5.2 Free
 
 OpenRouter routing is deliberately configured with no model fallback, so a failed free route returns a safe retryable response instead of silently using another model or a paid route. The reviewed route is the exact `openrouter:z-ai/glm-5.2:free` model ID ([OpenRouter model page](https://openrouter.ai/z-ai/glm-5.2:free)); it is not a dynamic model selector. GLM-5.2 supports internal reasoning at `high` or `xhigh`; the application enables reasoning, excludes reasoning text from returned content, and uses `high` for normal runtime turns. `xhigh` is an explicit manual-evaluation option because it increases latency and quota use. The adapter requests native strict JSON Schema output through Pydantic AI and sets `OPENROUTER_REQUIRE_PARAMETERS=true`; Pydantic validation remains the canonical post-validation boundary. With the current `LLM_MAX_OUTPUT_TOKENS=800`, the reviewed adapter derives a provider budget of 4,000 tokens at `high` (5×) or 16,000 at `xhigh` (20×), covering reasoning plus the typed result. `OPENROUTER_TIMEOUT_SECONDS=60`, disabled SDK transport retries, and `OPENROUTER_OUTPUT_RETRIES=1` bound the request behavior; HTTP 429, timeout, authentication, and endpoint failures are surfaced as safe retryable failures rather than retried into quota exhaustion.
 
-As checked on **2026-09-05**, OpenRouter documented free-model limits of **20 requests/minute** and **50 requests/day**, rising to **1,000 requests/day after at least $10 of lifetime credit purchases** ([limits reference](https://openrouter.ai/docs/api_reference/limits)). These are volatile account/provider limits, not application guarantees. The endpoint catalogue showed one current free implementation, **Decart FP4**, for this model ([endpoint API](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model)); OpenRouter can change serving providers, quantization, availability, and downstream policies without changing the model ID. Pinning GLM-5.2 therefore removes model-selection variability while not promising immutable infrastructure. Keep using synthetic data until the downstream processor terms, retention, residency, transfer basis, and production privacy review are approved; `data_collection=deny` and `zdr=true` are routing preferences, not a GDPR, EU-residency, or zero-processing guarantee.
+OpenRouter documents free-model limits of **20 requests/minute** and **50 requests/day**, rising to **1,000 requests/day after at least $10 of lifetime credit purchases** ([limits reference](https://openrouter.ai/docs/api_reference/limits)). These are volatile account/provider limits, not application guarantees. The endpoint catalogue can expose a free **Decart FP4** implementation for this model ([endpoint API](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model)); OpenRouter can change serving providers, quantization, availability, and downstream policies without changing the model ID. Pinning GLM-5.2 therefore removes model-selection variability while not promising immutable infrastructure. Keep using synthetic data until the downstream processor terms, retention, residency, transfer basis, and production privacy review are approved; `data_collection=deny` and `zdr=true` are routing preferences, not a GDPR, EU-residency, or zero-processing guarantee.
 
-#### Groq free quota and 429 troubleshooting (checked 2026-09-03)
+#### Groq free quota and 429 troubleshooting
 
-Groq’s [official rate-limit reference](https://console.groq.com/docs/rate-limits) currently lists these high-level Free Plan limits for `openai/gpt-oss-20b`: **30 RPM**, **1,000 RPD**, **8,000 TPM**, and **200,000 TPD**. The [20B model page](https://console.groq.com/docs/model/openai/gpt-oss-20b), [120B model page](https://console.groq.com/docs/model/openai/gpt-oss-120b), and [structured-output reference](https://console.groq.com/docs/structured-outputs) document the relevant model capabilities. These figures are a dated reference for the named route, not a promise for every model: Groq says the exact limits are account/organization/project dependent and may change, so check the account Limits page before a live run. A free quota can also be temporarily unavailable.
+Groq’s [official rate-limit reference](https://console.groq.com/docs/rate-limits) currently lists these high-level Free Plan limits for `openai/gpt-oss-20b`: **30 RPM**, **1,000 RPD**, **8,000 TPM**, and **200,000 TPD**. The [20B model page](https://console.groq.com/docs/model/openai/gpt-oss-20b), [120B model page](https://console.groq.com/docs/model/openai/gpt-oss-120b), and [structured-output reference](https://console.groq.com/docs/structured-outputs) document the relevant model capabilities. Published figures are not a promise for every model: Groq says the exact limits are account/organization/project dependent and may change, so check the account Limits page before a live run. A free quota can also be temporarily unavailable.
 
 If Groq returns HTTP `429`, it may be the requests-per-minute/day or tokens-per-minute/day limit. The SDK automatically retries up to `GROQ_TRANSPORT_RETRIES` times, honoring a reasonable `Retry-After` value or applying jittered exponential backoff while the browser continues showing the typing indicator. If all attempts still fail, the adapter exposes a retryable `provider_rate_limited` response that names the pending screening field and does not change provider or model. Wait for the provider reset, reduce parallel turns/history/output, and check the selected project’s usage and limits. To make another attempt after a failed turn, use a new idempotency key; reusing the old key intentionally replays its stored failed response. If the route remains unavailable, switch explicitly as described above or run the provider-free deterministic evaluator.
 
@@ -375,7 +370,7 @@ The UI discloses that it is automated, explains the screening purpose, allows op
 
 Prompt-injection or sensitive-data turns do not mutate canonical screening facts or reach the model or deterministic semantic completion path; the assistant stays on task. For other safe turns, the LLM is tried first, and only a valid but neutral/empty structured response can trigger narrow deterministic completion. Provider failures return a retryable safe message and preserve the previous facts; they do not trigger semantic deterministic recovery or an alternate/paid provider. Generated recruiter summaries are limited to validated state and a deterministic decision, reject prompt/PII/protected-attribute-like content, and fall back to a factual template. Audit events contain operational metadata rather than a candidate-ranking score. Recruiters can record `advance`, `reject`, `needs_review`, `qualified`, or `disqualified` reviews through the protected API.
 
-The recommended Groq route still requires a provider privacy and transfer review. Groq’s [current data-controls documentation](https://console.groq.com/docs/your-data), checked 2026-09-03, says inference customer data is not retained by default, while usage metadata is always retained; reliability or abuse investigations may retain inputs/outputs for up to 30 days unless Zero Data Retention (ZDR) is enabled. Groq also states that retained customer data is stored in GCP buckets in the United States. ZDR is an organization setting in Groq Data Controls, not an application guarantee, and it does not cover this app’s database, logs, backups, browser speech services, or any other channel. Before real candidate use, verify the selected project’s controls and current [Groq DPA](https://console.groq.com/docs/legal/customer-data-processing-addendum), subprocessors, retention/deletion terms, SCC/US-transfer basis, residency, and legal basis. OpenRouter remains subject to its downstream providers’ policies; its ZDR/data-collection settings do not establish EU residency or suitability for candidate data.
+The recommended Groq route still requires a provider privacy and transfer review. Groq’s [current data-controls documentation](https://console.groq.com/docs/your-data) says inference customer data is not retained by default, while usage metadata is always retained; reliability or abuse investigations may retain inputs/outputs for up to 30 days unless Zero Data Retention (ZDR) is enabled. Groq also states that retained customer data is stored in GCP buckets in the United States. ZDR is an organization setting in Groq Data Controls, not an application guarantee, and it does not cover this app’s database, logs, backups, browser speech services, or any other channel. Before real candidate use, verify the selected project’s controls and current [Groq DPA](https://console.groq.com/docs/legal/customer-data-processing-addendum), subprocessors, retention/deletion terms, SCC/US-transfer basis, residency, and legal basis. OpenRouter remains subject to its downstream providers’ policies; its ZDR/data-collection settings do not establish EU residency or suitability for candidate data.
 
 This repository is an engineering demonstration, not a privacy notice, DPIA, employment policy, or legal opinion. It has no automated deletion worker, subject-rights workflow, consent/legal-basis configuration, tenant isolation, key rotation, production identity integration, or fairness evidence. Those are deployment requirements, not implied by the demo controls.
 
@@ -395,11 +390,11 @@ The included `render.yaml` describes a small Render Docker web service with one 
 
 `.github/workflows/ci.yml` runs on pushes and pull requests: locked dev install, Ruff format check/lint, strict Pyright, pytest with coverage, migration smoke test, Docker build, and a `/healthz` container smoke test. `.github/workflows/live-evals.yml` is manual-only and supports `groq:openai/gpt-oss-20b` (recommended free development route), `groq:openai/gpt-oss-120b` (explicit larger Groq model), the reviewed `openrouter:z-ai/glm-5.2:free` route, and `openai:gpt-5.6-luna` choices. Its reasoning-effort input defaults to GLM `high` and exposes `xhigh` for explicit diagnostics. The workflow allowlist is intentionally narrower than the runtime resolver: it limits manual hosted evaluations to reviewed model IDs, while local `LLM_MODEL` accepts any valid identifier supported by the selected provider. The workflow requires only the secret for the selected provider, runs the reusable typed provider-contract smoke by default, and can optionally run one synthetic conversation case. It also validates a caller-supplied USD approval threshold of at most 5.00. That threshold is an operator approval gate only: the workflow and evaluator do not cap provider billing, so configure a provider/project quota separately before running live mode. Groq and OpenRouter free quotas and route availability are volatile; the workflow never substitutes another model. Live mode can incur provider cost and latency; deterministic mode is the default and should gate ordinary changes.
 
-## EU orientation (checked 2026-09-02)
+## EU orientation
 
 This is an engineering signpost, not legal advice or a classification of the demo. The European Commission’s [AI Act overview](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai) and [enforcement timeline](https://digital-strategy.ec.europa.eu/en/policies/enforcement-ai-act), together with the [current consolidated Regulation (EU) 2024/1689](https://eur-lex.europa.eu/eli/reg/2024/1689), report broad application and enforcement/transparency activity from 2 August 2026 and Annex III employment high-risk rules from 2 December 2027 (with product-embedded high-risk rules from 2 August 2028). Recruitment classification depends on the concrete deployment and must be reviewed against the current sources. For data-protection orientation, see the official [GDPR text](https://eur-lex.europa.eu/eli/reg/2016/679/oj/eng/) and [EDPB rights overview](https://www.edpb.europa.eu/topics/key-gdpr-concepts/data-subject-rights_en). See [`docs/responsible-ai.md`](docs/responsible-ai.md) for the limitations and review gates.
 
-## Design trade-offs
+## Key design decisions and trade-offs
 
 - A modular monolith keeps the domain boundary and transaction story visible; service extraction can wait until traffic or team boundaries justify it.
 - SQLite makes local setup and deterministic tests cheap; it is not the right shared production store for concurrent, high-volume screening.
@@ -408,6 +403,37 @@ This is an engineering signpost, not legal advice or a classification of the dem
 - A lexical FAQ is less capable than semantic retrieval, but every answer is a versioned fixture and unsupported questions are honest.
 - Post-transaction summaries avoid holding a database transaction open on provider latency; the trade-off is that terminal results briefly show `summary_status: pending` and may use a fallback. If the derived summary write fails, the protected internal `POST /api/v1/internal/screenings/{session_id}/summary/retry` endpoint can repair it without re-running screening.
 - Process-local locks, limits, and rate counters are simple and testable; distributed deployments must add shared coordination.
+
+## Potential improvements
+
+The current implementation is intentionally a take-home-scale modular monolith. The
+highest-value next increments are operational and governance improvements rather than
+more autonomous model behavior:
+
+- replace the shared internal key with OIDC/SSO, role-based access, tenant isolation,
+  rotation, and recruiter access auditing;
+- move shared production state to managed PostgreSQL and run Alembic as an explicit
+  release step before horizontal scaling;
+- add a durable worker/queue for provider calls, summaries, and approved outbound
+  reminders while preserving idempotency and the no-open-transaction provider boundary;
+- implement real retention/deletion, candidate access/correction, human escalation,
+  appeal, and audit-export workflows—the existing `RETENTION_DAYS` value is configuration,
+  not a deletion job;
+- strengthen the FAQ retriever with governed semantic matching or query normalization so
+  conversational wrappers around supported questions are handled without allowing
+  unapproved answers; retain citations, locale parity, effective dates, and an honest
+  unsupported-answer fallback;
+- expand de-identified ES/EN/code-switch evaluation data and define release thresholds
+  for extraction accuracy, clarification rate, false disqualification, provider failure,
+  latency, accessibility, and permitted fairness slices; and
+- add shared rate limiting, provider circuit breaking, explicit cost/privacy-aware
+  failover policy, encrypted backups, telemetry export, and incident/runbook coverage for
+  a production deployment.
+
+The ordered production gates, including privacy, security, data-layer, model-quality,
+human-review, and operational work, are maintained in
+[`docs/future-production.md`](docs/future-production.md). These are proposals, not features
+silently implied by the demo.
 
 ## Further reading
 

@@ -3,9 +3,15 @@ from __future__ import annotations
 import pytest
 
 from candidate_screening.ai.interpreter import InterpreterResult
-from candidate_screening.ai.schemas import ExtractedLocation, ExtractedValue, TurnInterpretation
+from candidate_screening.ai.schemas import (
+    ExtractedLocation,
+    ExtractedValue,
+    TurnIntent,
+    TurnInterpretation,
+)
 from candidate_screening.application.deterministic_interpretation import (
     interpret_deterministically,
+    recover_candidate_question,
     recover_location_answer,
 )
 from candidate_screening.domain.enums import (
@@ -38,6 +44,38 @@ def test_semantic_questions_and_ability_phrases_remain_model_owned(message: str)
     result = interpret_deterministically(state, message)
 
     assert result is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["¿En qué consiste el puesto?", "¿Cómo es el proceso?", "What does the job involve?"],
+)
+def test_explicit_question_is_preserved_when_model_omits_candidate_questions(
+    message: str,
+) -> None:
+    interpreted = InterpreterResult(interpretation=TurnInterpretation(intent=TurnIntent.QUESTION))
+
+    recovered = recover_candidate_question(message, interpreted)
+
+    assert recovered.interpretation.intent is TurnIntent.QUESTION
+    assert recovered.interpretation.response_requested is True
+    assert recovered.interpretation.candidate_questions == [message]
+    assert recovered.usage["candidate_question_recovered"] is True
+
+
+def test_current_explicit_question_replaces_stale_model_question() -> None:
+    interpreted = InterpreterResult(
+        interpretation=TurnInterpretation(
+            intent=TurnIntent.QUESTION,
+            response_requested=True,
+            candidate_questions=["¿En qué consiste el puesto?"],
+        )
+    )
+
+    recovered = recover_candidate_question("¿Cómo es el proceso?", interpreted)
+
+    assert recovered.interpretation.candidate_questions == ["¿Cómo es el proceso?"]
+    assert recovered.usage["candidate_question_grounded"] is True
 
 
 @pytest.mark.parametrize("message", ["Maria Garcia", "Laura Pineda"])

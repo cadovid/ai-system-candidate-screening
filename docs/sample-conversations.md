@@ -1,6 +1,22 @@
 # Sample conversations
 
-These examples are deliberately synthetic. They show the shape of the state machine and deterministic outcomes, not a promise about a real employer, job, salary, coverage map, or provider wording. The bundled fixtures live in [`data/sample_conversations.json`](../data/sample_conversations.json), [`data/scenarios/scenarios.json`](../data/scenarios/scenarios.json), and [`data/evals/eval_cases.json`](../data/evals/eval_cases.json). Normal safe turns use the typed LLM interpreter first; a schema-valid neutral/empty result may receive narrow deterministic completion, while provider failures remain retryable failures. Provider-generated extraction wording can vary, but statuses, reason codes, area matches, and candidate-facing response plans come from Python. The live renderer chooses from a bounded copy set for a prompt or clarification; the chosen response is persisted, and tests inject a stable selector. The deterministic suite currently contains 24 scripted cases, including natural-language multi-field answers, conversational corrections, bilingual FAQ interruption, code-switching, and ambiguous city phrasing.
+The first happy path below is an anonymized transcript observed against the running local
+application and configured Groq model. The remaining examples are
+representative outputs from deterministic workflow and API regression cases. All names
+and job content are fictional; none is a promise about a real employer, salary, coverage
+map, or provider wording. The executable fixtures live in
+[`data/sample_conversations.json`](../data/sample_conversations.json),
+[`data/scenarios/scenarios.json`](../data/scenarios/scenarios.json), and
+[`data/evals/eval_cases.json`](../data/evals/eval_cases.json).
+
+Normal safe turns use the typed LLM interpreter first; a schema-valid neutral/empty
+result may receive narrow deterministic completion, while provider failures remain
+retryable failures. Model extraction can vary, but statuses, reason codes, area matches,
+and candidate-facing response plans come from Python. The live renderer selects from a
+bounded copy set and persists the selected response; tests inject a stable selector. The
+network-free suite currently contains 24 scripted cases covering happy paths,
+multi-field answers, corrections, bilingual FAQ interruption, code-switching, ambiguous
+locations, safety controls, and provider/schema failures.
 
 The JSON snippets below omit timestamps and evidence quotes for readability. In the database, accepted fields can retain bounded evidence and a message ID, and every turn carries a state version. Relative periods such as “next week” are intentionally valid start-availability answers: they are stored with `precision: "week"` and no exact date, whereas genuinely vague wording remains subject to clarification.
 
@@ -10,37 +26,45 @@ The recruiter demo is available at `/recruiter` and uses the same persisted scre
 
 Selecting `View details` opens the candidate detail panel with the recruiter summary, status and handoff metadata, deterministic reason codes, missing fields, expandable rule trace, transcript, summary retry action, and review form. The panel can be closed to return to the board. On small screens it stacks below the board and is brought into view after selection. These visual controls do not alter the canonical screening state or recruiter API behavior.
 
-## Spanish happy path
+## Live Spanish happy path with FAQ interruptions
+
+This transcript demonstrates three important behaviors in one completed conversation:
+several fields in the opening answer, supported FAQ questions without losing the pending
+screening goal, and the separate post-screening question phase.
 
 ```text
 Assistant: ¡Hola! Soy el asistente automatizado de IA para el puesto de repartidor/a. Recogeré algunos datos relacionados con el trabajo para una persona reclutadora. Puedes parar cuando quieras. No compartas información sensible que no sea necesaria. ¿Quieres continuar?
-Candidate: Ana López
-Assistant: ¿Tienes una licencia de conducir vigente? Responde sí o no.
-Candidate: Sí, la tengo.
-Assistant: ¿En qué ciudad y zona te gustaría repartir?
-Candidate: Madrid centro
-Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de semana?
-Candidate: Tiempo completo
-Assistant: ¿Qué horario prefieres: mañana, tarde, noche o flexible?
-Candidate: Por la mañana
-Assistant: ¿Cuántos años de experiencia en reparto tienes? Si quieres, indica también las plataformas.
-Candidate: 3 años en Glovo
-Assistant: ¿Cuándo podrías empezar?
-Candidate: Lo antes posible
+Candidate: Sí, adelante. Me llamo Ana Torres, tengo licencia vigente y quiero repartir en Madrid Centro.
+Assistant: Gracias. ¿Qué disponibilidad te encaja mejor: tiempo completo, tiempo parcial o fines de semana?
+Candidate: ¿Qué horarios hay?
+Assistant: Hay opciones de mañana, tarde, noche y flexibles, según la ubicación y las necesidades del restaurante.
+
+Perfecto. ¿Qué disponibilidad te encaja mejor: tiempo completo, tiempo parcial o fines de semana?
+Candidate: Busco jornada completa y prefiero un horario flexible.
+Assistant: Perfecto. ¿Cuánta experiencia tienes en reparto? Puedes contarme los años y, si quieres, las plataformas.
+Candidate: ¿En qué consiste el puesto?
+Assistant: El puesto consiste en recoger pedidos en el restaurante y entregarlos a clientes de la zona asignada, siguiendo las normas de seguridad.
+
+Perfecto. ¿Cuánta experiencia tienes en reparto? Puedes contarme los años y, si quieres, las plataformas.
+Candidate: Tengo tres años de experiencia repartiendo con Glovo.
+Assistant: Perfecto. ¿Cuándo estarías disponible para empezar?
+Candidate: Puedo empezar de inmediato.
 Assistant: Revisa los datos que he anotado:
-• Nombre completo: Ana García
+• Nombre completo: Ana Torres
 • Licencia de conducir vigente: Sí
 • Zona de reparto: Madrid — Centro
 • Disponibilidad: tiempo completo
-• Horario preferido: mañana
+• Horario preferido: flexible
 • Experiencia en reparto: 3 años (Glovo)
-• Disponibilidad para empezar: Lo antes posible
+• Disponibilidad para empezar: Puedo empezar de inmediato.
 ¿Está todo correcto?
-Candidate: Sí
+Candidate: Sí, todo correcto.
 Assistant: Antes de terminar, ¿tienes alguna pregunta sobre la empresa, el puesto o el proceso de selección?
-Candidate: ¿Qué equipo necesito para trabajar?
-Assistant: [Respuesta breve basada en el FAQ ficticio.] ¿Tienes alguna otra pregunta?
-Candidate: No, ninguna más.
+Candidate: ¿Cómo es el proceso?
+Assistant: Primero recogemos datos relacionados con el puesto. Después una persona reclutadora revisa la información y comunica los siguientes pasos.
+
+¿Tienes alguna otra pregunta?
+Candidate: No, no tengo más preguntas.
 Assistant: ¡Gracias! Tu información cumple los requisitos indicados. Una persona reclutadora la revisará y contactará contigo sobre los siguientes pasos.
 ```
 
@@ -52,21 +76,27 @@ Structured result:
   "reason_codes": ["all_explicit_criteria_met"],
   "ruleset_version": "2026-01",
   "state": {
-    "full_name": "Ana López",
+    "full_name": "Ana Torres",
     "drivers_license": true,
     "location": {"service_area_id": "es-mad-centro", "matched_name": "Madrid — Centro", "match_status": "exact", "confirmed": true},
     "availability": ["full_time"],
-    "preferred_schedule": "morning",
+    "preferred_schedule": "flexible",
     "delivery_experience_years": 3,
     "start_precision": "asap",
-    "candidate_confirmed": true
+    "candidate_confirmed": true,
+    "faq_offer_made": true,
+    "faq_completed": true
   },
   "summary_status": "generated or fallback",
   "handoff_status": "ready"
 }
 ```
 
-The fallback summary is deterministic and uses the active language, for example: `Nombre: Ana López; licencia vigente: yes; zona: Madrid — Centro; disponibilidad: full_time; horario: morning; experiencia en reparto: 3 years; inicio: asap; resultado determinista: qualified (all_explicit_criteria_met).` It intentionally does not copy free-form evidence or raw date text.
+The fallback summary is deterministic and uses the active language, for example:
+`Nombre: Ana Torres; licencia vigente: yes; zona: Madrid — Centro; disponibilidad:
+full_time; horario: flexible; experiencia en reparto: 3 years; inicio: asap; resultado
+determinista: qualified (all_explicit_criteria_met).` It intentionally does not copy
+free-form evidence or raw date text.
 
 Summary states are explicit rather than inferred from prose:
 
@@ -85,19 +115,19 @@ Voice mode uses the browser’s Web Speech APIs as a presentation/input layer. T
 ```text
 Candidate clicks Hablar.
 Browser interim display: "Ana Lopes"
-Browser final transcript in the editable textarea: "Ana Lopes"
-Candidate edits the textarea to: "Ana López"
+Browser final transcript in the editable textarea: "Sí adelante me llamo Ana Lopes"
+Candidate edits the textarea to: "Sí, adelante. Me llamo Ana López."
 Candidate clicks Enviar.
-Browser request: {"message":"Ana López", "input_mode":"voice"}
+Browser request: {"message":"Sí, adelante. Me llamo Ana López.", "input_mode":"voice"}
 
-Assistant text in chat: ¿Tienes una licencia de conducir vigente? Responde sí o no.
+Assistant text in chat: ¿Tienes una licencia de conducir vigente?
 If Leer respuestas en voz alta is enabled, browser speechSynthesis reads that same Spanish text aloud.
 
 Candidate clicks Hablar and says: "Sí, licencia vigente, Madrid centro, tiempo completo, por la mañana."
 Displayed final transcript: "Sí, licencia vigente, Madrid centro, tiempo completo, por la mañana."
 Candidate reviews it and clicks Enviar; no audio is uploaded and no separate voice screening starts.
 
-Assistant text in chat: ¿Cuántos años de experiencia en reparto tienes? Si quieres, indica también las plataformas.
+Assistant text in chat: ¿Cuánta experiencia tienes en reparto? Puedes contarme los años y, si quieres, las plataformas.
 Browser TTS (optional): reads the assistant text above.
 
 Candidate continues with the remaining spoken answers, reviews the final confirmation text, and says: "Sí".
@@ -107,7 +137,8 @@ Assistant text in chat: ¡Gracias! Tu información cumple los requisitos indicad
 The completion message remains available as written text in the chat; the terminal state then disables further turns.
 ```
 
-The resulting canonical state is the same as the typed Spanish happy path:
+The resulting canonical state is identical to submitting these same facts by keyboard;
+voice changes only the recorded input mode:
 
 ```json
 {
@@ -133,8 +164,10 @@ An English conversation follows the same fields and rules:
 
 ```text
 Assistant: Hi! I’m the automated AI screening assistant for the delivery-driver role. I’ll collect a few job-related details for a recruiter. You can stop at any time. Please don’t share unrelated sensitive information. Would you like to continue?
+Candidate: Yes, let's continue.
+Assistant: To get started, what's your full name?
 Candidate: Grace Lee
-Assistant: Do you have a valid driver's licence? Please answer yes or no.
+Assistant: Do you have a valid driver's licence?
 Candidate: Yes.
 Assistant: Which city and area would you like to deliver in?
 Candidate: Barcelona Eixample
@@ -168,7 +201,7 @@ If a Spanish session says `English please`, the interpreter may return `explicit
 
 ```text
 Candidate: Bruno García
-Assistant: ¿Tienes una licencia de conducir vigente? Responde sí o no.
+Assistant: ¿Tienes una licencia de conducir vigente?
 Candidate: No, todavía no.
 Assistant: Gracias por tu tiempo. Este puesto requiere una licencia de conducir vigente, así que no podemos continuar con esta evaluación.
 ```
@@ -192,7 +225,7 @@ Exact and alias match:
 
 ```text
 Candidate: Madrid centro
-Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de semana?
+Assistant: ¿Qué disponibilidad te encaja mejor: tiempo completo, tiempo parcial o fines de semana?
 ```
 
 The matcher normalizes case, accents, punctuation, and whitespace, then accepts the unique catalogue entry `es-mad-centro`. `confirmed` is true because it is an exact/alias match.
@@ -212,7 +245,7 @@ Ambiguous city:
 Candidate: Madrid
 Assistant: He entendido Madrid. Las zonas de reparto configuradas en Madrid son: Centro, Salamanca. ¿Puedes repartir en alguna de estas zonas? Responde sí o no.
 Candidate: Sí
-Assistant: ¿Buscas trabajar a tiempo completo, a tiempo parcial o los fines de semana?
+Assistant: ¿Qué disponibilidad te encaja mejor: tiempo completo, tiempo parcial o fines de semana?
 ```
 
 Both Madrid Centro and Salamanca are configured, so the matcher returns a city-level `ambiguous` result with both suggestions. It never selects one silently. The screening decision remains `in_progress` with `reason_codes: ["ambiguous_location"]` while the candidate answers the explicit city-area offer. A positive answer stores both configured area IDs as an accepted city scope; a negative answer yields deterministic `disqualified` with `outside_service_area`. If the candidate names a concrete offered zone instead, that exact zone is accepted.
@@ -266,7 +299,10 @@ While waiting, canonical availability remains `full_time`; the proposal is `part
 
 ## FAQ and unsupported questions
 
-Known FAQ questions are answered from the versioned bilingual catalogue, then the pending screening prompt is resumed:
+Explicit questions are grounded to the latest candidate message before lookup. This
+prevents an LLM response from omitting the question or repeating an older question from
+bounded history. A known FAQ is answered from the versioned bilingual catalogue, then
+the pending screening prompt is resumed:
 
 ```text
 Candidate: What schedules are available?
@@ -285,6 +321,23 @@ What is your full name?
 ```
 
 No pay, policy, or other fact is invented. The deterministic scenario `faq_then_answer` expects `in_progress` after the question and a subsequent name answer.
+
+Questions also work before the candidate supplies a screening field. This sequence was
+observed in a live Spanish conversation after the question-grounding fix:
+
+```text
+Candidate: ¿En qué consiste el puesto?
+Assistant: El puesto consiste en recoger pedidos en el restaurante y entregarlos a clientes de la zona asignada, siguiendo las normas de seguridad.
+
+Perfecto. Para empezar, ¿cuál es tu nombre completo?
+Candidate: ¿Cómo es el proceso?
+Assistant: Primero recogemos datos relacionados con el puesto. Después una persona reclutadora revisa la información y comunica los siguientes pasos.
+
+Gracias. Para empezar, ¿cuál es tu nombre completo?
+```
+
+The question answer does not populate a screening field, increment a clarification
+counter, or replace the pending full-name goal.
 
 ## Unexpected or unsafe transcripts
 
@@ -319,11 +372,18 @@ Provider failure:
   "error_code": "provider_unavailable",
   "retryable": true,
   "state_version": 1,
-  "assistant_message": "I’m sorry, I’m temporarily unable to process that message. Please try again."
+  "assistant_message": "I’m having a temporary problem validating your full name. Everything already confirmed is still saved; please try that answer again in a moment."
 }
 ```
 
-The failed turn is persisted so the same idempotency key can be replayed safely. A provider/API/schema failure is distinct from a valid-but-insufficient response and does not trigger semantic deterministic recovery or an alternate provider. Storage failure has a similar user-facing boundary; unexpected HTTP errors become the generic error shape with a correlation ID.
+For Groq, retryable 408/409/429/5xx failures first receive the configured bounded
+transport retries. Only the exhausted failure is persisted and returned, so the browser
+keeps one typing indicator visible while the backend retries. The same idempotency key
+can then replay the stored failure safely. A provider/API/schema failure is distinct from
+a valid-but-insufficient response and does not trigger semantic deterministic recovery,
+an alternate provider, or an unexpected paid route. The temporary message names the
+pending field; storage failure has a similar bounded boundary, and unexpected HTTP
+errors use the common error shape with a correlation ID.
 
 Opt-out:
 

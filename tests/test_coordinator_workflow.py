@@ -1091,6 +1091,51 @@ async def test_question_is_answered_or_bounded_before_screening_resumes(
 
 
 @pytest.mark.asyncio
+async def test_spanish_faq_first_questions_are_recovered_and_answered(
+    coordinator_factory: tuple[async_sessionmaker[AsyncSession], CoordinatorBuilder],
+) -> None:
+    """Missing question arrays cannot make FAQ-first turns look like answers."""
+
+    factory, build = coordinator_factory
+    interpreter = QueueInterpreter(
+        [
+            TurnInterpretation(intent=TurnIntent.QUESTION),
+            TurnInterpretation(
+                intent=TurnIntent.QUESTION,
+                response_requested=True,
+                # Simulate the provider echo observed with bounded history.
+                candidate_questions=["¿En qué consiste el puesto?"],
+            ),
+        ]
+    )
+    coordinator = build(interpreter)
+    created = await coordinator.create_conversation(language=Language.ES)
+
+    role = await coordinator.process_turn(
+        created.conversation_id,
+        "¿En qué consiste el puesto?",
+        "faq-role-first",
+    )
+    process = await coordinator.process_turn(
+        created.conversation_id,
+        "¿Cómo es el proceso?",
+        "faq-process-second",
+    )
+
+    assert role.next_field == ScreeningField.FULL_NAME.value
+    assert "recoger pedidos" in role.assistant_message
+    assert "nombre completo" in role.assistant_message
+    assert process.next_field == ScreeningField.FULL_NAME.value
+    assert "Primero recogemos datos" in process.assistant_message
+    assert "nombre completo" in process.assistant_message
+    assert interpreter.calls == 2
+    role_usage = await _turn_usage(factory, created.conversation_id, "faq-role-first")
+    process_usage = await _turn_usage(factory, created.conversation_id, "faq-process-second")
+    assert role_usage["candidate_question_recovered"] is True
+    assert process_usage["candidate_question_grounded"] is True
+
+
+@pytest.mark.asyncio
 async def test_off_topic_message_is_bounded_after_semantic_interpretation(
     coordinator_factory: tuple[async_sessionmaker[AsyncSession], CoordinatorBuilder],
 ) -> None:
@@ -1229,6 +1274,103 @@ async def test_known_city_location_creates_safe_pending_city_offer_after_model_a
     assert view.state.pending_confirmation is not None
     assert view.state.pending_confirmation.reason == "service_area_city"
     assert interpreter.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_known_city_is_recovered_when_model_requests_response_and_echoes_bad_evidence(
+    coordinator_factory: tuple[async_sessionmaker[AsyncSession], CoordinatorBuilder],
+) -> None:
+    """A provider flag cannot suppress a catalogue-grounded city answer."""
+
+    factory, build = coordinator_factory
+    interpreter = QueueInterpreter(
+        [
+            TurnInterpretation(full_name=ExtractedValue(value="Carlos Alcantara", provided=True)),
+            TurnInterpretation(drivers_license=ExtractedValue(value=True, provided=True)),
+            TurnInterpretation(
+                response_requested=True,
+                location=ExtractedLocation(
+                    raw_value="Madrid",
+                    city="Madrid",
+                    provided=True,
+                    evidence="turn:stale-canonical-evidence",
+                ),
+            ),
+        ]
+    )
+    coordinator = build(interpreter)
+    created = await coordinator.create_conversation(language=Language.ES)
+
+    await coordinator.process_turn(created.conversation_id, "Carlos Alcantara", "name")
+    await coordinator.process_turn(created.conversation_id, "Sí, tengo una", "licence")
+    offer = await coordinator.process_turn(created.conversation_id, "Madrid", "city")
+
+    assert offer.screening_status is ScreeningStatus.IN_PROGRESS
+    assert offer.next_field == ScreeningField.LOCATION.value
+    assert "Centro" in offer.assistant_message
+    assert "Salamanca" in offer.assistant_message
+    view = await coordinator.get_conversation(created.conversation_id)
+    assert view.state.location.city == "Madrid"
+    assert view.state.pending_confirmation is not None
+    assert view.state.pending_confirmation.reason == "service_area_city"
+    usage = await _turn_usage(factory, created.conversation_id, "city")
+    assert usage["location_patch_discarded"] is True
+    assert usage["deterministic_fallback_reason"] == "message_exact"
+
+
+@pytest.mark.asyncio
+async def test_exact_yes_accepts_city_offer_despite_model_stale_location_echo(
+    coordinator_factory: tuple[async_sessionmaker[AsyncSession], CoordinatorBuilder],
+) -> None:
+    """A stale provider echo cannot make an exact pending confirmation loop."""
+
+    factory, build = coordinator_factory
+    interpreter = QueueInterpreter(
+        [
+            TurnInterpretation(full_name=ExtractedValue(value="Luis Sainz", provided=True)),
+            TurnInterpretation(drivers_license=ExtractedValue(value=True, provided=True)),
+            TurnInterpretation(
+                location=ExtractedLocation(
+                    raw_value="Madrid",
+                    city="Madrid",
+                    provided=True,
+                    evidence="Madrid",
+                )
+            ),
+            TurnInterpretation(
+                response_requested=True,
+                location=ExtractedLocation(
+                    raw_value="Madrid",
+                    city="Madrid",
+                    provided=True,
+                    evidence="turn:stale-canonical-evidence",
+                ),
+            ),
+        ]
+    )
+    coordinator = build(interpreter)
+    created = await coordinator.create_conversation(language=Language.ES)
+
+    await coordinator.process_turn(created.conversation_id, "Luis Sainz", "name")
+    await coordinator.process_turn(created.conversation_id, "Sí tengo una", "licence")
+    offer = await coordinator.process_turn(created.conversation_id, "Madrid", "city")
+    assert offer.next_field == ScreeningField.LOCATION.value
+
+    accepted = await coordinator.process_turn(created.conversation_id, "Sí", "city-confirmation")
+
+    assert accepted.screening_status is ScreeningStatus.IN_PROGRESS
+    assert accepted.next_field == ScreeningField.AVAILABILITY.value
+    view = await coordinator.get_conversation(created.conversation_id)
+    assert view.state.pending_confirmation is None
+    assert view.state.location.confirmed is True
+    assert view.state.location.service_area_ids == [
+        "es-mad-centro",
+        "es-mad-salamanca",
+    ]
+    usage = await _turn_usage(factory, created.conversation_id, "city-confirmation")
+    assert usage["location_patch_discarded"] is True
+    assert usage["deterministic_fallback_used"] is True
+    assert usage["deterministic_fallback_reason"] == "confirmation"
 
 
 @pytest.mark.asyncio
